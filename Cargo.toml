@@ -1,0 +1,45 @@
+[package]
+name = "veeet"
+version = "0.9.0"
+authors = ["Stay True <https://staytruemx.com>"]
+homepage = "https://veeet.staytruemx.com"
+edition = "2024"
+rust-version = "1.95"
+description = "Visualizador de audio reactivo para Spotify en Windows"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+bytemuck = { version = "1", features = ["derive"] }
+eframe = "0.37"
+env_logger = "0.11"
+global-hotkey = "0.10"
+log = "0.4"
+raw-window-handle = "0.6"
+realfft = "3.5"
+rfd = "0.18"
+serde = { version = "1", features = ["derive"] }
+sysinfo = "0.40"
+toml = "1.2"
+wasapi = "0.27"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
