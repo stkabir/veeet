@@ -9,6 +9,7 @@ mod preset;
 mod render;
 mod shuffle;
 mod ui;
+mod update;
 
 use eframe::egui;
 
@@ -28,6 +29,10 @@ fn enable_dpi_awareness() {
 }
 
 fn main() -> eframe::Result {
+    // Tras una actualización: esperar a que salga la versión anterior y
+    // limpiar sus restos.
+    update::wait_for_previous();
+    update::cleanup_old();
     enable_dpi_awareness();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 

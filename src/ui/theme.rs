@@ -35,9 +35,10 @@ pub fn preset_accent(preset: VisualPreset) -> Color32 {
         VisualPreset::Alchemy => Color32::from_rgb(110, 235, 170),
         VisualPreset::Ambience => Color32::from_rgb(178, 140, 255),
         VisualPreset::Scope => Color32::from_rgb(150, 255, 100),
-        VisualPreset::Hurricane => Color32::from_rgb(200, 215, 255),
         VisualPreset::Niagara => Color32::from_rgb(90, 225, 225),
         VisualPreset::Windmill => Color32::from_rgb(255, 140, 110),
+        VisualPreset::XMarks => Color32::from_rgb(255, 214, 80),
+        VisualPreset::Particles => Color32::from_rgb(255, 120, 200),
     }
 }
 

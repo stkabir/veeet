@@ -120,9 +120,10 @@ pub fn builtin_name(engine: VisualPreset) -> &'static str {
         VisualPreset::Alchemy => "Alquimia",
         VisualPreset::Ambience => "Ambiente",
         VisualPreset::Scope => "Trazo",
-        VisualPreset::Hurricane => "Huracán",
         VisualPreset::Niagara => "Niagara",
         VisualPreset::Windmill => "Molino",
+        VisualPreset::XMarks => "X Marca",
+        VisualPreset::Particles => "Partículas",
     }
 }
 
@@ -734,6 +735,20 @@ preset = \"windmill\"
     }
 
     #[test]
+    fn retired_hurricane_loads_as_ambience() {
+        let text = "id = \"h\"
+[params]
+preset = \"hurricane\"
+";
+        let preset = parse_preset(text).unwrap();
+        assert_eq!(preset.params.preset, VisualPreset::Ambience);
+        assert_eq!(
+            VisualPreset::from_alias("huracan"),
+            Some(VisualPreset::Ambience)
+        );
+    }
+
+    #[test]
     fn every_field_has_an_owner() {
         let toml::Value::Table(fields) = toml::Value::try_from(VisualCfg::default()).unwrap()
         else {
@@ -854,14 +869,14 @@ beat_sensitivity = 0.9
         let root = temp_root("crud");
         let mut config = Config::default();
         let mut store = PresetStore::open(root.clone(), &mut config);
-        let id = store.create(VisualPreset::Hurricane);
+        let id = store.create(VisualPreset::Windmill);
         assert!(root.join("user").join(format!("{id}.toml")).exists());
         let copy = store.duplicate(store.find(&id).unwrap()).unwrap();
         assert_ne!(id, copy);
         store.select(&copy).unwrap();
         assert!(store.delete(&copy));
-        assert_eq!(store.active_id(), "builtin-hurricane");
-        assert!(!store.delete("builtin-hurricane"));
+        assert_eq!(store.active_id(), "builtin-windmill");
+        assert!(!store.delete("builtin-windmill"));
 
         // Al reabrir, el preset del usuario sigue ahí.
         let reopened = PresetStore::open(root.clone(), &mut Config::default());

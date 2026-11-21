@@ -14,6 +14,25 @@ use super::theme::{
 };
 use crate::config::VisualPreset;
 
+/// Motor cuyas descripciones de campo se muestran (lo fija el cajón antes
+/// de dibujar cada pestaña).
+pub fn set_describe_engine(ctx: &egui::Context, engine: VisualPreset) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("veeet-describe-engine"), engine));
+}
+
+fn describe_engine(ui: &Ui) -> VisualPreset {
+    ui.ctx()
+        .data(|d| d.get_temp::<VisualPreset>(egui::Id::unique("veeet-describe-engine")))
+        .unwrap_or_default()
+}
+
+/// Línea tenue bajo un campo que explica qué cambia en la escena.
+fn description(ui: &mut Ui, label: &str) {
+    if let Some(text) = super::describe::describe(describe_engine(ui), label) {
+        ui.add(egui::Label::new(RichText::new(text).font(body(9.5)).color(INK_FAINT)).wrap());
+    }
+}
+
 pub fn fmt_2_dec(v: f64) -> String {
     format!("{v:.2}")
 }
@@ -24,9 +43,71 @@ pub fn fmt_int(v: f64) -> String {
 
 const RAIL_HEIGHT: f32 = 4.0;
 const THUMB_RADIUS: f32 = 6.0;
+/// Distancia en píxeles a la que un imán atrapa el valor.
+const MAGNET_PX: f32 = 7.0;
 
-/// Riel fino con relleno de acento y pulgar circular. Clic o arrastre en
-/// cualquier punto del riel fija el valor.
+/// Paso "redondo" (1, 2 o 5 × 10ⁿ) de unos 200 pasos por riel.
+fn nice_step(span: f32) -> f32 {
+    let raw = (span / 200.0).max(1e-6);
+    let mag = 10f32.powf(raw.log10().floor());
+    let n = raw / mag;
+    let k = if n < 1.5 {
+        1.0
+    } else if n < 3.5 {
+        2.0
+    } else if n < 7.5 {
+        5.0
+    } else {
+        10.0
+    };
+    k * mag
+}
+
+/// Valores que atraen al pulgar: extremos, cuartos, el 0 y el 1, y los
+/// enteros cuando el rango es corto.
+fn magnets(min: f32, max: f32) -> Vec<f32> {
+    let span = max - min;
+    let mut out: Vec<f32> = [0.0, 0.25, 0.5, 0.75, 1.0]
+        .iter()
+        .map(|f| min + span * f)
+        .collect();
+    for v in [0.0, 1.0] {
+        if v > min && v < max {
+            out.push(v);
+        }
+    }
+    if span <= 8.0 {
+        let mut i = min.ceil();
+        while i <= max {
+            out.push(i);
+            i += 1.0;
+        }
+    }
+    out
+}
+
+/// Ajusta `v` al imán más cercano (si está a menos de `MAGNET_PX`) o al
+/// paso redondo. Con Shift el paso es diez veces más fino y no hay imanes.
+fn snap(v: f32, min: f32, max: f32, px_per_unit: f32, fine: bool) -> f32 {
+    let v = v.clamp(min, max);
+    if !fine {
+        let best = magnets(min, max)
+            .into_iter()
+            .map(|m| (m, (v - m).abs() * px_per_unit))
+            .filter(|(_, d)| *d < MAGNET_PX)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((m, _)) = best {
+            return m;
+        }
+    }
+    let step = nice_step(max - min) * if fine { 0.1 } else { 1.0 };
+    ((v / step).round() * step).clamp(min, max)
+}
+
+/// Riel fino con relleno de acento y pulgar circular. Magnético: el valor
+/// se ajusta a pasos redondos y se pega a los imanes (marcas del riel).
+/// Tomar el pulgar no lo mueve; el arrastre es relativo y con Shift va diez
+/// veces más lento. Un clic en otro punto del riel salta ahí.
 fn rail(
     ui: &mut Ui,
     value: &mut f32,
@@ -38,20 +119,49 @@ fn rail(
     let (rect, mut response) =
         ui.allocate_exact_size(vec2(width.max(40.0), 18.0), Sense::click_and_drag());
     let track = rect.x_range().shrink(THUMB_RADIUS);
+    let span = (max - min).max(f32::EPSILON);
+    let px_per_unit = track.span().max(1.0) / span;
+    let fine = ui.input(|i| i.modifiers.shift);
+    let anchor_id = response.id.with("anchor");
+    let thumb_of = |v: f32| track.min + ((v - min) / span).clamp(0.0, 1.0) * track.span();
 
-    if (response.dragged() || response.clicked())
-        && let Some(pointer) = response.interact_pointer_pos()
-    {
-        let t = ((pointer.x - track.min) / track.span().max(1.0)).clamp(0.0, 1.0);
-        let next = min + t * (max - min);
-        if (next - *value).abs() > f32::EPSILON {
-            *value = next;
-            response.mark_changed();
+    let pressed = response.is_pointer_button_down_on() && ui.input(|i| i.pointer.any_pressed());
+    let mut next = None;
+    if let Some(pointer) = response.interact_pointer_pos() {
+        if pressed || response.clicked() {
+            // Lejos del pulgar: salta ahí. Sobre el pulgar: lo toma sin moverlo.
+            let start = if (pointer.x - thumb_of(*value)).abs() > THUMB_RADIUS + 3.0 {
+                let t = ((pointer.x - track.min) / track.span().max(1.0)).clamp(0.0, 1.0);
+                snap(min + t * span, min, max, px_per_unit, fine)
+            } else {
+                *value
+            };
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(anchor_id, (pointer.x, start)));
+            next = Some(start);
+        } else if response.dragged() {
+            let (x0, v0) = ui
+                .ctx()
+                .data(|d| d.get_temp::<(f32, f32)>(anchor_id))
+                .unwrap_or((pointer.x, *value));
+            let gain = if fine { 0.1 } else { 1.0 };
+            let raw = v0 + (pointer.x - x0) / px_per_unit * gain;
+            next = Some(snap(raw, min, max, px_per_unit, fine));
+            if fine {
+                // Shift cambia la ganancia: se re-ancla para que no salte.
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(anchor_id, (pointer.x, raw.clamp(min, max))));
+            }
         }
     }
+    if let Some(next) = next
+        && (next - *value).abs() > f32::EPSILON
+    {
+        *value = next;
+        response.mark_changed();
+    }
 
-    let t = ((*value - min) / (max - min).max(f32::EPSILON)).clamp(0.0, 1.0);
-    let thumb_x = track.min + t * track.span();
+    let thumb_x = thumb_of(*value);
     let cy = rect.center().y;
     let rail_rect = Rect::from_min_max(
         pos2(track.min, cy - RAIL_HEIGHT * 0.5),
@@ -68,6 +178,11 @@ fn rail(
         StrokeKind::Outside,
     );
     painter.rect_filled(fill_rect, 2.0, accent);
+    // Marcas de los imanes, bajo el riel.
+    for m in magnets(min, max) {
+        let x = thumb_of(m);
+        painter.circle_filled(pos2(x, rail_rect.max.y + 3.5), 1.0, hairline(70));
+    }
 
     let engaged = response.hovered() || response.dragged();
     let center = pos2(thumb_x, cy);
@@ -97,7 +212,8 @@ fn value_capsule(
     fmt: fn(f64) -> String,
 ) -> Response {
     let (min, max) = (*range.start(), *range.end());
-    let speed = ((max - min) / 256.0).max(0.001);
+    // Arrastre de la cápsula: lento, para ajuste fino.
+    let speed = ((max - min) / 600.0).max(0.0005);
     // DragValue usa Button al mostrar y Body/Monospace al editar.
     for style in [
         egui::TextStyle::Body,
@@ -142,7 +258,9 @@ pub fn slider_fmt(
             value_capsule(ui, value, range.clone(), accent, fmt);
         });
     });
-    rail(ui, value, range, accent, ui.available_width());
+    description(ui, label);
+    rail(ui, value, range, accent, ui.available_width())
+        .on_hover_text("Arrastra para ajustar · Shift: ajuste fino sin imanes");
     ui.add_space(8.0);
 }
 
@@ -244,6 +362,7 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str, accent: Color32) -> Respo
         5.0,
         lerp_color(INK_MUTED, accent, t),
     );
+    description(ui, label);
     response
 }
 
@@ -305,15 +424,34 @@ pub fn preset_word(preset: VisualPreset) -> &'static str {
         VisualPreset::Alchemy => "Alquimia",
         VisualPreset::Ambience => "Ambiente",
         VisualPreset::Scope => "Trazo",
-        VisualPreset::Hurricane => "Huracán",
         VisualPreset::Niagara => "Niagara",
         VisualPreset::Windmill => "Molino",
+        VisualPreset::XMarks => "X Marca",
+        VisualPreset::Particles => "Partículas",
     }
 }
 
 /// Casilla cuadrada de preset (40 × 40), solo icono. La seleccionada se
 /// tiñe del acento.
 pub fn preset_tile(ui: &mut Ui, preset: VisualPreset, selected: bool, accent: Color32) -> Response {
+    tile(ui, selected, accent, |painter, icon, color| {
+        draw_preset_icon(painter, icon, preset, color);
+    })
+}
+
+/// Casilla de la escena «Aleatorio»: un dado.
+pub fn shuffle_tile(ui: &mut Ui, selected: bool, accent: Color32) -> Response {
+    tile(ui, selected, accent, |painter, icon, color| {
+        paint_glyph(painter, icon.center(), Glyph::Dice, color);
+    })
+}
+
+fn tile(
+    ui: &mut Ui,
+    selected: bool,
+    accent: Color32,
+    icon_fn: impl FnOnce(&egui::Painter, Rect, Color32),
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::click());
     let painter = ui.painter_at(rect.expand(1.0));
     let hovered = response.hovered();
@@ -341,7 +479,7 @@ pub fn preset_tile(ui: &mut Ui, preset: VisualPreset, selected: bool, accent: Co
         INK_MUTED
     };
     let icon = Rect::from_center_size(rect.center(), vec2(20.0, 20.0));
-    draw_preset_icon(&painter, icon, preset, color);
+    icon_fn(&painter, icon, color);
     response
 }
 
@@ -570,23 +708,42 @@ pub fn draw_preset_icon(painter: &egui::Painter, rect: Rect, preset: VisualPrese
                 painter.add(egui::Shape::line(points, Stroke::new(1.4, color)));
             }
         }
-        VisualPreset::Hurricane => {
-            // Espiral con dos esferas en el ojo.
+        VisualPreset::XMarks => {
+            // X de ondas con estelas líquidas alrededor.
             let c = rect.center();
-            let radius = rect.width().min(rect.height()) * 0.5;
-            let points: Vec<egui::Pos2> = (0..40)
-                .map(|i| {
-                    let th = i as f32 / 39.0 * std::f32::consts::TAU * 1.4;
-                    let r = radius * 0.28 * (0.3 * th).exp();
-                    c + vec2(th.cos(), th.sin()) * r.min(radius)
-                })
-                .collect();
-            painter.add(egui::Shape::line(
-                points,
-                Stroke::new(1.0, with_alpha(color, 140)),
-            ));
-            painter.circle_filled(c + vec2(radius * 0.25, 0.0), 2.2, color);
-            painter.circle_filled(c - vec2(radius * 0.25, 0.0), 2.2, color);
+            let r = rect.width().min(rect.height()) * 0.5;
+            for k in 1..4 {
+                let rr = r * (0.3 + 0.22 * k as f32);
+                painter.circle_stroke(
+                    c,
+                    rr,
+                    Stroke::new(1.0, with_alpha(color, 90 - 20 * k as u8)),
+                );
+            }
+            for d in [vec2(0.7, 0.7), vec2(0.7, -0.7)] {
+                let n = vec2(-d.y, d.x);
+                let points: Vec<egui::Pos2> = (0..=12)
+                    .map(|i| {
+                        let t = i as f32 / 12.0 * 2.0 - 1.0;
+                        let wobble = (i as f32 * 1.9).sin() * r * 0.08;
+                        c + d * (t * r) + n * wobble
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(points, Stroke::new(1.4, color)));
+            }
+        }
+        VisualPreset::Particles => {
+            // Puntos que siguen una corriente curva.
+            let c = rect.center();
+            let r = rect.width().min(rect.height()) * 0.5;
+            for i in 0..18 {
+                let t = i as f32 / 17.0;
+                let lane = (i % 3) as f32 - 1.0;
+                let x = c.x - r * 0.9 + t * r * 1.8;
+                let y = c.y + (t * 5.0 + lane).sin() * r * 0.35 + lane * r * 0.3;
+                let alpha = 90 + (i * 9) as u8;
+                painter.circle_filled(pos2(x, y), 1.1 + 0.8 * t, with_alpha(color, alpha));
+            }
         }
         VisualPreset::Ambience => {
             // Tres nubes suaves que se superponen.

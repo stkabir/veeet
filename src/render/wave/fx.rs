@@ -1,17 +1,16 @@
-//! Presets con feedback: Anillo líquido por bandas, Scope, Huracán, Niagara y
-//! Windmill. Scope, Niagara y Windmill son recreaciones originales inspiradas
-//! en Windows Media Player (hechas a partir de observar su salida, sin código
-//! de Microsoft).
+//! Presets con feedback: Anillo líquido por bandas, Scope, Niagara, Windmill,
+//! X Marca y Partículas. Scope, Niagara, Windmill y X Marca son recreaciones
+//! originales inspiradas en Windows Media Player (hechas a partir de observar
+//! su salida, sin código de Microsoft).
 //!
 //! Cada builder dibuja su geometría en `out` y devuelve los parámetros del
 //! feedback de GPU (`alchemy.wgsl`), que convierte los trazos en estelas.
 
-use std::collections::VecDeque;
 use std::f32::consts::{PI, TAU};
 
 use bytemuck::Zeroable;
 
-use super::{Vertex, hsl_to_rgb, push_disc, push_segment, push_tri, resample_bands, scale_rgb};
+use super::{Vertex, hsl_to_rgb, push_segment, push_tri, resample_bands, scale_rgb};
 use crate::audio::AnalysisFrame;
 use crate::config::{VisualCfg, VisualPreset};
 use crate::render::alchemy::FeedbackParams;
@@ -36,19 +35,6 @@ impl Frame<'_> {
     }
 }
 
-/// Tramo de rayo: de un punto a otro.
-type Bolt = ((f32, f32), (f32, f32));
-
-/// Un rayo vivo del Huracán: segmentos en pantalla y su vida restante.
-struct Strike {
-    segments: Vec<Bolt>,
-    life: f32,
-    max_life: f32,
-}
-
-const STRIKE_LIFE: f32 = 0.22;
-/// Posiciones guardadas por esfera para la estela de cometa.
-const SPHERE_TRAIL: usize = 48;
 /// Los presets de WMP corren a ~30 cuadros por segundo; sus constantes
 /// medidas están expresadas por cuadro a esa tasa.
 const WMP_FPS: f32 = 30.0;
@@ -57,6 +43,25 @@ const WMP_FPS: f32 = 30.0;
 /// media anchura de la franja de Windmill (0.095) son ahora ajustes del
 /// preset, con esos valores medidos por defecto.
 const WINDMILL_SPIN: f32 = 0.14;
+/// X Marca: puntos por brazo de la X.
+const X_STEPS: usize = 256;
+
+/// Una partícula del campo de flujo, en coordenadas normalizadas (alto = 1,
+/// ancho = aspecto).
+#[derive(Clone, Copy)]
+struct Particle {
+    x: f32,
+    y: f32,
+    px: f32,
+    py: f32,
+    /// Impulso propio (explosiones), decae solo.
+    vx: f32,
+    vy: f32,
+    life: f32,
+    max_life: f32,
+    /// 0..1 fijo por partícula: varía el color y la velocidad.
+    seed: f32,
+}
 
 pub struct FxState {
     last_time: f32,
@@ -66,13 +71,14 @@ pub struct FxState {
     /// Golpe propio: 1 en el beat, cae en ~180 ms.
     kick: f32,
     rng: u32,
-    // Huracán
-    sphere_time: [f32; 2],
-    sphere_trails: [VecDeque<(f32, f32, f32)>; 2],
-    hurricane_cooldown: f32,
-    strikes: Vec<Strike>,
     // Niagara y Windmill
     windmill_angle: f32,
+    // X Marca
+    x_angle: f32,
+    road_travel: f32,
+    // Partículas
+    particles: Vec<Particle>,
+    burst_flip: bool,
 }
 
 impl FxState {
@@ -84,14 +90,11 @@ impl FxState {
             bands: Vec::with_capacity(64),
             kick: 0.0,
             rng: 0x2545_F491,
-            sphere_time: [0.0, 7.3],
-            sphere_trails: [
-                VecDeque::with_capacity(SPHERE_TRAIL + 1),
-                VecDeque::with_capacity(SPHERE_TRAIL + 1),
-            ],
-            hurricane_cooldown: 0.0,
-            strikes: Vec::new(),
             windmill_angle: 0.0,
+            x_angle: PI * 0.25,
+            road_travel: 0.0,
+            particles: Vec::new(),
+            burst_flip: false,
         }
     }
 
@@ -103,10 +106,6 @@ impl FxState {
         x ^= x << 5;
         self.rng = x;
         (x >> 8) as f32 / (1u32 << 24) as f32
-    }
-
-    fn signed(&mut self) -> f32 {
-        self.random() * 2.0 - 1.0
     }
 
     /// Dibuja el preset y devuelve el feedback. Los presets sin feedback
@@ -123,9 +122,10 @@ impl FxState {
         match f.cfg.preset {
             VisualPreset::WaveRing => self.ring(out, f),
             VisualPreset::Scope => self.scope(out, f),
-            VisualPreset::Hurricane => self.hurricane(out, f),
             VisualPreset::Niagara => self.niagara(out, f),
             VisualPreset::Windmill => self.windmill(out, f),
+            VisualPreset::XMarks => self.xmarks(out, f),
+            VisualPreset::Particles => self.particles(out, f),
             VisualPreset::WavyForm3 | VisualPreset::Alchemy | VisualPreset::Ambience => {
                 FeedbackParams::zeroed()
             }
@@ -246,20 +246,28 @@ impl FxState {
         let level = f.analysis.level.clamp(0.0, 1.0);
         let custom = palette::custom(f.cfg);
         let step = (n / 512).max(1);
-        let mut prev: Option<((f32, f32), [f32; 4])> = None;
-        for i in (0..n).step_by(step) {
-            let u = i as f32 / (n - 1) as f32;
-            let p = (u * f.width, cy + wave[i] * amp);
-            let t = (self.hue + 0.25 * u).rem_euclid(1.0);
-            let rgb = match &custom {
-                Some(colors) => palette::cycle3(colors, t),
-                None => palette::sample(palette::ALCHEMY, t),
-            };
-            let c = scale_rgb(rgb, 0.8 + 0.6 * level);
-            if let Some((pp, pc)) = prev {
-                push_segment(out, pp, p, pc, c, hw);
+        // Espejo: una segunda onda invertida, con el tono corrido.
+        let passes: &[(f32, f32)] = if f.cfg.scope_mirror {
+            &[(1.0, 0.0), (-1.0, 0.5)]
+        } else {
+            &[(1.0, 0.0)]
+        };
+        for &(sign, shift) in passes {
+            let mut prev: Option<((f32, f32), [f32; 4])> = None;
+            for i in (0..n).step_by(step) {
+                let u = i as f32 / (n - 1) as f32;
+                let p = (u * f.width, cy + sign * wave[i] * amp);
+                let t = (self.hue + 0.25 * u + shift).rem_euclid(1.0);
+                let rgb = match &custom {
+                    Some(colors) => palette::cycle3(colors, t),
+                    None => palette::sample(palette::ALCHEMY, t),
+                };
+                let c = scale_rgb(rgb, 0.8 + 0.6 * level);
+                if let Some((pp, pc)) = prev {
+                    push_segment(out, pp, p, pc, c, hw);
+                }
+                prev = Some((p, c));
             }
-            prev = Some((p, c));
         }
         let frames = self.frames();
         FeedbackParams {
@@ -268,159 +276,6 @@ impl FxState {
             blur: f.cfg.scope_blur,
             inject: 0.7,
             ..self.feedback(f.cfg.fx_trail * 0.97)
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Huracán: esferas que viajan por la tormenta (la nebulosa la dibuja
-    // `ambience.wgsl` en modo 1) y rayos ramificados en el beat.
-    // ------------------------------------------------------------------
-
-    /// Posición y profundidad (0.2..1) de una esfera en su tiempo propio `s`.
-    /// Entra y sale del ojo, cruza la nube y deriva en curvas tipo ocho.
-    fn sphere_at(s: f32, i: usize, center: (f32, f32), eye: f32) -> (f32, f32, f32) {
-        let phi = i as f32 * PI;
-        let angle = phi + s * 0.9 + 0.6 * (s * 0.37 + phi).sin() + 0.8 * (s * 0.62).sin();
-        let radius = eye
-            * (1.7 + 1.3 * (s * 0.53 + phi * 1.3).sin() + 0.5 * (s * 1.21 + phi).sin()).max(0.15);
-        let depth = 0.6 + 0.4 * (s * 0.71 + phi).sin();
-        (
-            center.0 + radius * angle.cos(),
-            center.1 + radius * angle.sin() * 0.85,
-            depth,
-        )
-    }
-
-    fn hurricane(&mut self, out: &mut Vec<Vertex>, f: &Frame<'_>) -> FeedbackParams {
-        resample_bands(&f.analysis.bands, 3, &mut self.bands);
-        let (bass, mid, treble) = (self.bands[0], self.bands[1], self.bands[2]);
-        let dt = self.dt;
-        let center = f.center();
-        let eye = f.min_dim() * f.cfg.hurricane_eye;
-        let kick = self.kick;
-        let size = f.cfg.hurricane_sphere_size;
-        let custom = palette::custom(f.cfg);
-
-        // Las esferas viajan: cada una tiene su propio tiempo, que el beat
-        // acelera de golpe.
-        let mut spheres = [(0.0, 0.0, 0.0); 2];
-        let pairs = self
-            .sphere_time
-            .iter_mut()
-            .zip(self.sphere_trails.iter_mut());
-        for (i, ((time, trail), slot)) in pairs.zip(spheres.iter_mut()).enumerate() {
-            *time += dt * (0.8 + 0.8 * bass + 3.0 * kick) * f.cfg.hurricane_sphere_speed;
-            let p = Self::sphere_at(*time, i, center, eye);
-            *slot = p;
-            trail.push_front(p);
-            trail.truncate(SPHERE_TRAIL);
-        }
-
-        for (i, trail) in self.sphere_trails.iter().enumerate() {
-            let rgb = match (&custom, i) {
-                (Some(colors), _) => colors[i.min(1)],
-                (None, 0) => [0.55, 0.85, 1.0],
-                (None, _) => [0.85, 0.65, 1.0],
-            };
-            // Estela de cometa: se afina y se apaga hacia atrás.
-            let len = trail.len().max(2) as f32;
-            for (k, (a, b)) in trail.iter().zip(trail.iter().skip(1)).enumerate() {
-                let fade = 1.0 - k as f32 / len;
-                let c = scale_rgb(rgb, 0.9 * fade * a.2);
-                push_segment(
-                    out,
-                    (a.0, a.1),
-                    (b.0, b.1),
-                    c,
-                    c,
-                    (0.4 + 3.2 * fade * a.2) * size.max(0.1),
-                );
-            }
-            // Esfera con halo; el tamaño sigue la profundidad.
-            let (x, y, z) = spheres[i];
-            if size > 0.0 {
-                push_disc(
-                    out,
-                    (x, y),
-                    ((10.0 + 8.0 * kick) * z + 4.0) * size,
-                    scale_rgb(rgb, 0.18),
-                    16,
-                );
-                push_disc(
-                    out,
-                    (x, y),
-                    (6.0 * z + 1.5) * size,
-                    scale_rgb(rgb, 0.75),
-                    14,
-                );
-                push_disc(
-                    out,
-                    (x, y),
-                    (3.0 * z + 0.8) * size,
-                    scale_rgb([1.0, 1.0, 1.0], 1.6),
-                    10,
-                );
-            }
-        }
-
-        // Rayos: en cada beat (o por energía alta) nacen rayos ramificados
-        // entre las esferas y hacia la tormenta.
-        self.hurricane_cooldown -= dt;
-        let bolts = f.cfg.hurricane_bolts;
-        let energetic = f.analysis.level > 0.55 && self.random() < 0.04 * bolts;
-        if bolts > 0.0 && self.hurricane_cooldown <= 0.0 && (f.analysis.beat || energetic) {
-            self.hurricane_cooldown = 0.12 / bolts.max(0.05);
-            let count = 1 + (self.random() * 2.0 + treble) as usize;
-            for c in 0..count {
-                let from = (spheres[c % 2].0, spheres[c % 2].1);
-                let to = if c == 0 {
-                    (spheres[1].0, spheres[1].1)
-                } else {
-                    let a = self.random() * TAU;
-                    let r = eye * (1.5 + 2.5 * self.random());
-                    (center.0 + r * a.cos(), center.1 + r * a.sin())
-                };
-                let mut segments = Vec::with_capacity(96);
-                self.lightning(from, to, 5, 0.22, &mut segments, true);
-                self.strikes.push(Strike {
-                    segments,
-                    life: STRIKE_LIFE,
-                    max_life: STRIKE_LIFE,
-                });
-            }
-        }
-        for s in &mut self.strikes {
-            s.life -= dt;
-        }
-        self.strikes.retain(|s| s.life > 0.0);
-        let tint = match &custom {
-            Some(colors) => BoltTint {
-                halo: colors[2],
-                core: colors[2].map(|v| 0.5 + 0.5 * v),
-            },
-            None => STORM_BOLT,
-        };
-        for strike in &self.strikes {
-            let segments = strike.segments.iter().copied();
-            draw_bolt(
-                out,
-                segments,
-                strike.segments.len(),
-                strike.life / strike.max_life,
-                1.0,
-                tint,
-            );
-        }
-
-        let frames = self.frames();
-        FeedbackParams {
-            // Las estelas giran y caen despacio hacia el ojo.
-            zoom: (0.996 - 0.003 * bass).powf(frames),
-            rotation: (0.004 + 0.006 * mid) * frames,
-            swirl: 0.015 * f.cfg.hurricane_swirl * frames,
-            blur: 0.8,
-            inject: 0.6,
-            ..self.feedback(f.cfg.fx_trail * 0.95)
         }
     }
 
@@ -531,21 +386,11 @@ impl FxState {
         let (ux, uy) = (cos, sin);
         let (vx, vy) = (-sin, cos);
         let at = |s: f32, t: f32| (cx + ux * s + vx * t, cy + uy * s + vy * t);
-        // La franja respira con el golpe: sus bordes se abren y vuelven.
-        let width = f.cfg.windmill_width.max(0.001);
+        // La franja respira con el golpe en proporción a su ancho: con ancho
+        // 0 las aspas siguen pegadas.
+        let width = f.cfg.windmill_width.max(0.0);
         let half = f.height * width * (1.0 + 0.45 * self.kick);
 
-        let erase = [-1.0, -1.0, -1.0, 1.0];
-        let (a, b, c, d) = (
-            at(-reach, -half),
-            at(reach, -half),
-            at(reach, half),
-            at(-reach, half),
-        );
-        push_tri(out, a, b, c, erase, erase, erase);
-        push_tri(out, a, c, d, erase, erase, erase);
-
-        // Bordes: forma de onda en líneas dobles, intensidad alta.
         let wave = &f.analysis.waveform;
         let n = wave.len().max(1);
         let amp = f.height
@@ -553,25 +398,48 @@ impl FxState {
             * (1.0 + 2.0 * self.kick)
             * f.cfg.sensitivity.max(0.0)
             / 1.5;
+        // Juntar: 0 = cada borde lleva la onda en espejo (se abren entre sí),
+        // 1 = los dos bordes siguen la misma onda, en paralelo.
+        let join = f.cfg.windmill_join.clamp(0.0, 1.0);
         const STEPS: usize = 120;
+        let sample = |i: usize| {
+            let u = i as f32 / STEPS as f32;
+            wave.get((u * (n - 1) as f32) as usize)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        // Desplazamiento perpendicular de un borde en el punto `i`.
+        let edge = |sign: f32, i: usize, extra: f32| {
+            let shift = sample(i) * amp * (sign * (1.0 - join) + join);
+            sign * (half + extra) + shift
+        };
+        let along = |i: usize| -reach + 2.0 * reach * i as f32 / STEPS as f32;
+
+        // Borrado: solo entre las dos ondas internas, no un rectángulo, así
+        // no queda negro entre el borde de la franja y la onda.
+        let erase = [-1.0, -1.0, -1.0, 1.0];
+        for i in 0..STEPS {
+            let (s0, s1) = (along(i), along(i + 1));
+            let (lo0, hi0) = (edge(-1.0, i, 0.0), edge(1.0, i, 0.0));
+            let (lo1, hi1) = (edge(-1.0, i + 1, 0.0), edge(1.0, i + 1, 0.0));
+            if hi0 - lo0 <= 0.5 && hi1 - lo1 <= 0.5 {
+                continue;
+            }
+            let (a, b, c, d) = (at(s0, lo0), at(s1, lo1), at(s1, hi1), at(s0, hi0));
+            push_tri(out, a, b, c, erase, erase, erase);
+            push_tri(out, a, c, d, erase, erase, erase);
+        }
+
+        // Bordes: forma de onda en líneas dobles, intensidad alta.
         let lines = f.cfg.windmill_edge_lines.max(1);
-        let gap = f.cfg.windmill_edge_gap / width;
+        let gap = f.height * f.cfg.windmill_edge_gap;
         for sign in [-1.0_f32, 1.0] {
             for j in 0..lines {
                 // La primera línea es la más brillante; las demás se apagan.
                 let v = 1.0 - 0.3 * j.min(1) as f32 - 0.1 * j.saturating_sub(1) as f32;
-                let (offset, color) = (1.0 + gap * j as f32, [v, v, v, 1.0]);
-                let point = |i: usize| {
-                    let u = i as f32 / STEPS as f32;
-                    let value = wave
-                        .get((u * (n - 1) as f32) as usize)
-                        .copied()
-                        .unwrap_or(0.0);
-                    at(
-                        -reach + 2.0 * reach * u,
-                        sign * (half * offset + value * amp),
-                    )
-                };
+                let color = [v, v, v, 1.0];
+                let extra = gap * j as f32;
+                let point = |i: usize| at(along(i), edge(sign, i, extra));
                 for i in 0..STEPS {
                     push_segment(out, point(i), point(i + 1), color, color, 1.0);
                 }
@@ -605,80 +473,221 @@ impl FxState {
         }
     }
 
-    /// Rayo por desplazamiento de punto medio: subdivide `depth` veces
-    /// moviendo cada punto medio en perpendicular; a veces nace una rama.
-    /// Los extremos no se mueven, así el rayo termina exactamente en `b`.
-    fn lightning(
-        &mut self,
-        a: (f32, f32),
-        b: (f32, f32),
-        depth: u32,
-        roughness: f32,
-        out: &mut Vec<Bolt>,
-        branches: bool,
-    ) {
-        if depth == 0 {
-            out.push((a, b));
-            return;
-        }
-        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-        let len = (dx * dx + dy * dy).sqrt().max(1.0);
-        let (nx, ny) = (-dy / len, dx / len);
-        let off = len * roughness * self.signed();
-        let mid = ((a.0 + b.0) * 0.5 + nx * off, (a.1 + b.1) * 0.5 + ny * off);
-        self.lightning(a, mid, depth - 1, roughness, out, branches);
-        self.lightning(mid, b, depth - 1, roughness, out, branches);
-        // Rayos finos (aspereza baja): pocas ramas, cortas y solo en los
-        // niveles chicos, para que no se abran en abanico.
-        let fine = roughness < 0.15;
-        let (branch_chance, can_branch) = if fine {
-            (0.25, depth == 3)
-        } else {
-            (0.35, depth >= 3)
+    // ------------------------------------------------------------------
+    // X Marca: una X de ondas a pantalla completa que gira; cada vibración
+    // deja estela y el feedback la convierte en un líquido que llena la
+    // pantalla y se agita al ritmo del golpe.
+    // ------------------------------------------------------------------
+
+    fn xmarks(&mut self, out: &mut Vec<Vertex>, f: &Frame<'_>) -> FeedbackParams {
+        resample_bands(&f.analysis.bands, 3, &mut self.bands);
+        let (bass, mid) = (self.bands[0], self.bands[1]);
+        let (w, h) = (f.width, f.height);
+        let (cx, cy) = f.center();
+        let dt = self.dt;
+        let kick = self.kick;
+        let custom = palette::custom(f.cfg);
+        let level = f.analysis.level.clamp(0.0, 1.0);
+        let color_at = |t: f32| match &custom {
+            Some(colors) => palette::cycle3(colors, t),
+            None => palette::sample(palette::ALCHEMY, t.rem_euclid(1.0)),
         };
-        if branches && can_branch && self.random() < branch_chance {
-            let angle = dy.atan2(dx) + self.signed() * if fine { 0.6 } else { 0.9 };
-            let reach = if fine {
-                0.12 + 0.12 * self.random()
-            } else {
-                0.3 + 0.3 * self.random()
-            };
-            let blen = len * reach;
-            let end = (mid.0 + blen * angle.cos(), mid.1 + blen * angle.sin());
-            self.lightning(mid, end, depth - 2, roughness, out, false);
+
+        // Fase del líquido: avanza con los graves y salta en cada golpe.
+        let flow = f.cfg.xmarks_speed;
+        self.road_travel += dt * flow * (0.4 + 0.9 * bass + 2.5 * kick);
+
+        // --- X ---
+        self.x_angle += dt * f.cfg.xmarks_spin * TAU * 0.1 * (1.0 + 0.8 * kick);
+        let wave = &f.analysis.waveform;
+        let n = wave.len();
+        if n >= 2 {
+            let reach = (w * w + h * h).sqrt() * 0.55;
+            let amp = f.min_dim()
+                * f.cfg.xmarks_amplitude
+                * (1.0 + 1.5 * kick)
+                * f.cfg.sensitivity.max(0.0)
+                / 1.5;
+            let hw = (f.cfg.line_width * f.ppp * 0.9).max(0.8);
+            let arms = f.cfg.xmarks_arms.max(2) as usize;
+            for arm in 0..arms {
+                let ang = self.x_angle + arm as f32 * PI / arms as f32;
+                let (sin, cos) = ang.sin_cos();
+                let (ux, uy, vx, vy) = (cos, sin, -sin, cos);
+                // Cada brazo lee otra parte de la onda para no repetirse.
+                let start = arm * n / arms;
+                let point = |i: usize| {
+                    let u = i as f32 / X_STEPS as f32;
+                    let s = -reach + 2.0 * reach * u;
+                    let idx = (start + (u * (n - 1) as f32) as usize) % n;
+                    // La onda se calma en el cruce y crece hacia las puntas.
+                    let taper = 0.35 + 0.65 * (2.0 * u - 1.0).abs();
+                    let t = wave[idx] * amp * taper;
+                    (cx + ux * s + vx * t, cy + uy * s + vy * t)
+                };
+                let mut prev = point(0);
+                for i in 1..=X_STEPS {
+                    let p = point(i);
+                    let u = i as f32 / X_STEPS as f32;
+                    let c = scale_rgb(
+                        color_at(self.hue + 0.3 * u + arm as f32 / arms as f32),
+                        0.85 + 0.6 * level + 0.6 * kick,
+                    );
+                    push_segment(out, prev, p, c, c, hw * (1.0 + 0.6 * mid));
+                    prev = p;
+                }
+            }
+        }
+
+        let frames = self.frames();
+        let wobble = f.cfg.xmarks_curve;
+        let pulse = f.cfg.xmarks_road;
+        // El líquido gira un poco contra la X: las estelas se enroscan.
+        let spin = f.cfg.xmarks_spin;
+        FeedbackParams {
+            // Se expande despacio y da un empujón en cada golpe: la estela
+            // llena la pantalla.
+            zoom: (1.0 + flow * (0.0015 + 0.004 * bass) + pulse * 0.018 * kick).powf(frames),
+            rotation: -0.0015 * spin * frames,
+            swirl: wobble * (0.002 + 0.01 * kick) * frames.min(2.0),
+            // Ondulación: el agua se agita más con el golpe.
+            warp_amp: wobble * (0.0015 + 0.006 * kick + 0.002 * bass) * frames.min(2.0),
+            warp_freq: 6.0 + 2.0 * mid,
+            time: self.road_travel * 2.0,
+            hue_shift: 0.004 * f.cfg.color_cycle * frames,
+            blur: 0.8,
+            inject: 0.7,
+            fade: remap_trail(f.cfg.fx_trail, 0.93, 0.985).powf(frames),
+            ..self.feedback(f.cfg.fx_trail)
         }
     }
-}
 
-/// Colores de un rayo: halo ancho y núcleo.
-#[derive(Clone, Copy)]
-struct BoltTint {
-    halo: [f32; 3],
-    core: [f32; 3],
-}
+    // ------------------------------------------------------------------
+    // Partículas: miles de puntos siguen un campo de flujo suave y dejan
+    // estela; en cada golpe estallan desde el centro o desde un punto al
+    // azar.
+    // ------------------------------------------------------------------
 
-/// Rayos de tormenta (Huracán): halo violeta, núcleo blanco.
-const STORM_BOLT: BoltTint = BoltTint {
-    halo: [0.6, 0.55, 1.0],
-    core: [0.9, 0.92, 1.0],
-};
-/// Dibuja un rayo. `life` (0..1) lo apaga; `reveal` (0..1) dibuja solo los
-/// primeros tramos (crecimiento).
-fn draw_bolt(
-    out: &mut Vec<Vertex>,
-    segments: impl Iterator<Item = Bolt>,
-    count: usize,
-    life: f32,
-    reveal: f32,
-    tint: BoltTint,
-) {
-    let k = life.clamp(0.0, 1.0);
-    let halo = scale_rgb(tint.halo, 0.18 * k);
-    let core = scale_rgb(tint.core, 1.5 * k);
-    let visible = (count as f32 * reveal.clamp(0.0, 1.0)).ceil() as usize;
-    for (a, b) in segments.take(visible) {
-        push_segment(out, a, b, halo, halo, 3.0);
-        push_segment(out, a, b, core, core, 0.5 + 0.8 * k);
+    fn spawn(&mut self, aspect: f32, life: f32) -> Particle {
+        let (x, y) = (self.random() * aspect, self.random());
+        let max_life = life * (0.5 + self.random());
+        Particle {
+            x,
+            y,
+            px: x,
+            py: y,
+            vx: 0.0,
+            vy: 0.0,
+            life: max_life,
+            max_life,
+            seed: self.random(),
+        }
+    }
+
+    fn particles(&mut self, out: &mut Vec<Vertex>, f: &Frame<'_>) -> FeedbackParams {
+        resample_bands(&f.analysis.bands, 3, &mut self.bands);
+        let (bass, mid, treble) = (self.bands[0], self.bands[1], self.bands[2]);
+        let (w, h) = (f.width, f.height);
+        let aspect = w / h.max(1.0);
+        let dt = self.dt;
+        let t = f.time;
+        let level = f.analysis.level.clamp(0.0, 1.0);
+        let cfg = f.cfg;
+
+        let count = cfg.particles_count.max(1) as usize;
+        while self.particles.len() < count {
+            let mut p = self.spawn(aspect, cfg.particles_life);
+            // Vidas escalonadas: no renacen todas juntas.
+            p.life *= self.random();
+            self.particles.push(p);
+        }
+        self.particles.truncate(count);
+
+        // Explosión: alterna entre el centro y un punto al azar.
+        let burst = if f.analysis.beat && cfg.particles_burst > 0.0 {
+            self.burst_flip = !self.burst_flip;
+            let origin = if self.burst_flip {
+                (aspect * 0.5, 0.5)
+            } else {
+                (
+                    aspect * (0.2 + 0.6 * self.random()),
+                    0.2 + 0.6 * self.random(),
+                )
+            };
+            Some((origin, cfg.particles_burst * (0.6 + 0.8 * level)))
+        } else {
+            None
+        };
+
+        let sc = cfg.particles_scale;
+        let speed = 0.06 * cfg.particles_speed * (0.4 + 1.3 * level + 0.6 * mid);
+        let damp = (-dt * 2.5).exp();
+        let jitter = 0.08 * treble;
+        let mut parts = std::mem::take(&mut self.particles);
+        for p in parts.iter_mut() {
+            p.px = p.x;
+            p.py = p.y;
+            // Campo de flujo: suma de senos rotados que cambian con el tiempo
+            // (barato y sin rejilla). El ángulo sale del campo.
+            let (x, y) = (p.x * sc, p.y * sc);
+            let field = (x * 1.7 + t * 0.21).sin()
+                + (y * 2.3 - t * 0.17 + (x * 0.9).sin()).sin()
+                + ((x + y) * 1.1 + t * 0.13 + bass).sin() * 0.8;
+            let ang = field * PI;
+            let local = speed * (0.6 + 0.8 * p.seed);
+            if let Some(((ox, oy), force)) = burst {
+                let (dx, dy) = (p.x - ox, p.y - oy);
+                let d = (dx * dx + dy * dy).sqrt().max(0.02);
+                let push = force * 0.25 / (0.15 + d);
+                p.vx += dx / d * push;
+                p.vy += dy / d * push;
+            }
+            p.vx *= damp;
+            p.vy *= damp;
+            p.x += (ang.cos() * local + p.vx) * dt;
+            p.y += (ang.sin() * local + p.vy) * dt;
+            p.life -= dt;
+            p.x += jitter * dt * (p.seed * 97.0 + t * 7.0).sin();
+            p.y += jitter * dt * (p.seed * 61.0 + t * 9.0).cos();
+        }
+        for p in parts.iter_mut() {
+            let gone =
+                p.life <= 0.0 || p.x < -0.05 || p.x > aspect + 0.05 || p.y < -0.05 || p.y > 1.05;
+            if gone {
+                *p = self.spawn(aspect, cfg.particles_life);
+            }
+        }
+
+        let custom = palette::custom(cfg);
+        let hw = (f.ppp * 0.75 * cfg.particles_size).max(0.4);
+        for p in &parts {
+            let (dx, dy) = (p.x - p.px, p.y - p.py);
+            let vel = (dx * dx + dy * dy).sqrt() / dt.max(1e-3);
+            // Aparece y se apaga suave al nacer y al morir.
+            let age = 1.0 - p.life / p.max_life;
+            let alpha = (age * 6.0).min(1.0) * (p.life / p.max_life * 4.0).min(1.0);
+            let tone = self.hue + p.seed * 0.35 + (vel * 2.0).min(0.3);
+            let rgb = match &custom {
+                Some(colors) => palette::cycle3(colors, tone),
+                None => palette::sample(palette::ALCHEMY, tone.rem_euclid(1.0)),
+            };
+            let c = scale_rgb(rgb, alpha * (0.5 + 0.8 * level + (vel * 4.0).min(1.5)));
+            push_segment(
+                out,
+                (p.px / aspect * w, p.py * h),
+                (p.x / aspect * w, p.y * h),
+                c,
+                c,
+                hw,
+            );
+        }
+        self.particles = parts;
+
+        FeedbackParams {
+            blur: 0.5,
+            inject: 0.8,
+            ..self.feedback(cfg.fx_trail)
+        }
     }
 }
 

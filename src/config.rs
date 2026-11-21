@@ -55,11 +55,11 @@ pub enum VisualPreset {
     /// Recreación original inspirada en Alchemy de Windows Media Player.
     Alchemy,
     /// Recreación original inspirada en Ambience de Windows Media Player.
+    /// Huracán se retiró: sus presets cargan como Ambiente.
+    #[serde(alias = "hurricane")]
     Ambience,
     /// Recreación original inspirada en Scope (Bars and Waves) de WMP.
     Scope,
-    /// Dos esferas que viajan por un huracán nebuloso y disparan rayos.
-    Hurricane,
     /// Recreación original inspirada en Ambience · Niagara de WMP: marcas en
     /// espejo nacen abajo y suben dejando estelas con escalones.
     #[serde(alias = "lightning")]
@@ -67,6 +67,12 @@ pub enum VisualPreset {
     /// Recreación original inspirada en Ambience · Windmill de WMP: una franja
     /// gira como aspa y barre una nube luminosa.
     Windmill,
+    /// Una X de ondas a pantalla completa que gira y deja una estela
+    /// líquida que llena la pantalla (inspirada en "X Marks the Spot" de WMP).
+    #[serde(rename = "xmarks")]
+    XMarks,
+    /// Partículas que siguen un campo de flujo y estallan en el beat.
+    Particles,
 }
 
 impl VisualPreset {
@@ -78,9 +84,10 @@ impl VisualPreset {
             Self::Alchemy => "alchemy",
             Self::Ambience => "ambience",
             Self::Scope => "scope",
-            Self::Hurricane => "hurricane",
             Self::Niagara => "niagara",
             Self::Windmill => "windmill",
+            Self::XMarks => "xmarks",
+            Self::Particles => "particles",
         }
     }
 
@@ -90,25 +97,27 @@ impl VisualPreset {
             "wave" | "onda" | "wavy_form3" | "wavy" => Self::WavyForm3,
             "ring" | "anillo" | "wave_ring" => Self::WaveRing,
             "alchemy" | "alquimia" => Self::Alchemy,
-            "ambience" | "ambiente" => Self::Ambience,
+            "ambience" | "ambiente" | "hurricane" | "huracan" => Self::Ambience,
             "scope" | "trazo" => Self::Scope,
-            "hurricane" | "huracan" => Self::Hurricane,
             "niagara" | "lightning" | "rayos" => Self::Niagara,
             "windmill" | "molino" => Self::Windmill,
+            "xmarks" | "x" | "xmarca" | "x_marks" => Self::XMarks,
+            "particles" | "particulas" | "partículas" => Self::Particles,
             _ => return None,
         })
     }
 
-    pub fn all() -> [Self; 8] {
+    pub fn all() -> [Self; 9] {
         [
             Self::WavyForm3,
             Self::WaveRing,
             Self::Alchemy,
             Self::Ambience,
             Self::Scope,
-            Self::Hurricane,
             Self::Niagara,
             Self::Windmill,
+            Self::XMarks,
+            Self::Particles,
         ]
     }
 }
@@ -237,15 +246,14 @@ pub mod range {
     pub const AMBIENCE_SPEED: F = 0.0..=4.0;
     pub const AMBIENCE_SCALE: F = 0.2..=6.0;
     pub const AMBIENCE_BRIGHTNESS: F = 0.0..=3.0;
+    pub const AMBIENCE_MORPH: F = 0.0..=3.0;
+    pub const AMBIENCE_DENSITY: F = 0.0..=2.0;
+    pub const AMBIENCE_WARP: F = 0.0..=3.0;
 
     // Scope
     pub const SCOPE_HEIGHT: F = 0.0..=1.0;
     pub const SCOPE_EXPAND: F = 0.97..=1.04;
     pub const SCOPE_BLUR: F = 0.0..=3.0;
-
-    // Huracán
-    pub const HURRICANE_EYE: F = 0.02..=0.4;
-    pub const MULTIPLIER: F = 0.0..=4.0;
 
     // Niagara
     pub const NIAGARA_SPEED: F = 0.0..=5.0;
@@ -256,11 +264,28 @@ pub mod range {
 
     // Molino
     pub const WINDMILL_SPEED: F = -5.0..=5.0;
-    pub const WINDMILL_WIDTH: F = 0.005..=0.5;
+    pub const WINDMILL_WIDTH: F = 0.0..=0.5;
+    pub const WINDMILL_JOIN: F = 0.0..=1.0;
     pub const WINDMILL_EDGE_GAP: F = 0.0..=0.1;
     pub const WINDMILL_EDGE_LINES: U = 1..=4;
     pub const WINDMILL_BLUR: F = 0.0..=5.0;
     pub const WINDMILL_AMPLITUDE: F = 0.0..=0.3;
+
+    // X Marca
+    pub const XMARKS_SPIN: F = -2.0..=2.0;
+    pub const XMARKS_SPEED: F = 0.0..=4.0;
+    pub const XMARKS_CURVE: F = 0.0..=3.0;
+    pub const XMARKS_AMPLITUDE: F = 0.0..=0.4;
+    pub const XMARKS_ARMS: U = 2..=6;
+    pub const XMARKS_ROAD: F = 0.0..=2.0;
+
+    // Partículas
+    pub const PARTICLES_COUNT: U = 200..=6000;
+    pub const PARTICLES_SPEED: F = 0.0..=4.0;
+    pub const PARTICLES_BURST: F = 0.0..=4.0;
+    pub const PARTICLES_SCALE: F = 0.2..=6.0;
+    pub const PARTICLES_SIZE: F = 0.3..=4.0;
+    pub const PARTICLES_LIFE: F = 0.5..=10.0;
 }
 
 /// De dónde salen los colores de un preset.
@@ -359,10 +384,17 @@ pub struct VisualCfg {
     pub ambience_glow: f32,
     /// Brillo de las nubes.
     pub ambience_brightness: f32,
+    /// Cuánto cambia de forma el gas en cada golpe.
+    pub ambience_morph: f32,
+    /// Cuánto gas llena la pantalla: menos deja más huecos oscuros.
+    pub ambience_density: f32,
+    /// Turbulencia: cuánto se retuerce el gas.
+    pub ambience_warp: f32,
 
-    /// Persistencia de la estela de Scope, Huracán, Niagara y Windmill.
+    /// Persistencia de la estela de Scope, Niagara, Windmill, X Marca y
+    /// Partículas.
     pub fx_trail: f32,
-    /// Bloom de Anillo, Scope, Huracán, Niagara y Windmill.
+    /// Bloom de Anillo, Scope, Niagara, Windmill, X Marca y Partículas.
     pub fx_glow: f32,
 
     /// Alto de la onda de Scope (fracción del alto).
@@ -371,17 +403,8 @@ pub struct VisualCfg {
     pub scope_expand: f32,
     /// Desenfoque de la estela de Scope.
     pub scope_blur: f32,
-
-    /// Radio del ojo del huracán (fracción del lado menor).
-    pub hurricane_eye: f32,
-    /// Tamaño de las esferas.
-    pub hurricane_sphere_size: f32,
-    /// Velocidad de las esferas.
-    pub hurricane_sphere_speed: f32,
-    /// Frecuencia de los rayos.
-    pub hurricane_bolts: f32,
-    /// Fuerza del remolino de la estela.
-    pub hurricane_swirl: f32,
+    /// Dibuja también la onda reflejada (arriba y abajo en espejo).
+    pub scope_mirror: bool,
 
     /// Velocidad con la que sube Niagara.
     pub niagara_speed: f32,
@@ -399,8 +422,11 @@ pub struct VisualCfg {
     /// Velocidad de giro del aspa de Windmill (negativo gira al revés).
     pub windmill_speed: f32,
     /// Media anchura de la franja (fracción del alto): junta o separa las
-    /// líneas que giran.
+    /// aspas que giran. En 0 quedan pegadas y no hay franja negra.
     pub windmill_width: f32,
+    /// 0 = las ondas de los bordes van en espejo (se abren entre sí);
+    /// 1 = siguen la misma onda y viajan juntas.
+    pub windmill_join: f32,
     /// Separación entre las líneas de cada borde.
     pub windmill_edge_gap: f32,
     /// Líneas por borde.
@@ -409,6 +435,32 @@ pub struct VisualCfg {
     pub windmill_blur: f32,
     /// Amplitud de la onda en los bordes.
     pub windmill_amplitude: f32,
+
+    /// Giro de la X (vueltas por segundo × 0.1; negativo gira al revés).
+    pub xmarks_spin: f32,
+    /// Flujo del líquido: qué tan rápido se expande y corre la estela.
+    pub xmarks_speed: f32,
+    /// Ondulación y remolino del líquido.
+    pub xmarks_curve: f32,
+    /// Amplitud de la onda en los brazos de la X (fracción del lado menor).
+    pub xmarks_amplitude: f32,
+    /// Líneas que forman la figura: 2 = X, 3 = asterisco, 4 = estrella…
+    pub xmarks_arms: u32,
+    /// Pulso: empujón del líquido en cada golpe (0 lo apaga).
+    pub xmarks_road: f32,
+
+    /// Cantidad de partículas.
+    pub particles_count: u32,
+    /// Velocidad del flujo.
+    pub particles_speed: f32,
+    /// Fuerza de la explosión en cada golpe.
+    pub particles_burst: f32,
+    /// Escala del campo de flujo: mayor = remolinos más chicos.
+    pub particles_scale: f32,
+    /// Grosor de cada partícula.
+    pub particles_size: f32,
+    /// Vida media de cada partícula en segundos.
+    pub particles_life: f32,
 
     // --- Reactividad ---
     /// Multiplicador de ganancia aplicado a la onda.
@@ -507,16 +559,15 @@ impl Default for VisualCfg {
             ambience_scale: 1.4,
             ambience_glow: 0.8,
             ambience_brightness: 1.0,
+            ambience_morph: 1.0,
+            ambience_density: 1.0,
+            ambience_warp: 1.0,
             fx_trail: 0.93,
             fx_glow: 0.9,
             scope_height: 0.32,
             scope_expand: 1.006,
             scope_blur: 0.8,
-            hurricane_eye: 0.11,
-            hurricane_sphere_size: 1.0,
-            hurricane_sphere_speed: 1.0,
-            hurricane_bolts: 1.0,
-            hurricane_swirl: 1.0,
+            scope_mirror: false,
             niagara_speed: 1.0,
             niagara_emit: 0.406,
             niagara_squeeze: 0.93,
@@ -525,10 +576,23 @@ impl Default for VisualCfg {
             niagara_continuous: false,
             windmill_speed: 1.0,
             windmill_width: 0.095,
+            windmill_join: 0.0,
             windmill_edge_gap: 0.012,
             windmill_edge_lines: 2,
             windmill_blur: 2.2,
             windmill_amplitude: 0.05,
+            xmarks_spin: 0.25,
+            xmarks_speed: 1.0,
+            xmarks_curve: 1.0,
+            xmarks_amplitude: 0.08,
+            xmarks_arms: 2,
+            xmarks_road: 1.0,
+            particles_count: 2500,
+            particles_speed: 1.0,
+            particles_burst: 1.0,
+            particles_scale: 1.5,
+            particles_size: 1.0,
+            particles_life: 4.0,
             gain: 1.0,
             spectrum_smoothing: 0.8,
             beat_sensitivity: 0.5,
@@ -699,6 +763,9 @@ impl VisualPreset {
                 "ambience_scale",
                 "ambience_glow",
                 "ambience_brightness",
+                "ambience_morph",
+                "ambience_density",
+                "ambience_warp",
             ],
             Self::Scope => &[
                 "sensitivity",
@@ -708,15 +775,7 @@ impl VisualPreset {
                 "scope_height",
                 "scope_expand",
                 "scope_blur",
-            ],
-            Self::Hurricane => &[
-                "fx_glow",
-                "fx_trail",
-                "hurricane_eye",
-                "hurricane_sphere_size",
-                "hurricane_sphere_speed",
-                "hurricane_bolts",
-                "hurricane_swirl",
+                "scope_mirror",
             ],
             Self::Niagara => &[
                 "sensitivity",
@@ -735,10 +794,33 @@ impl VisualPreset {
                 "fx_trail",
                 "windmill_speed",
                 "windmill_width",
+                "windmill_join",
                 "windmill_edge_gap",
                 "windmill_edge_lines",
                 "windmill_blur",
                 "windmill_amplitude",
+            ],
+            Self::XMarks => &[
+                "sensitivity",
+                "fx_glow",
+                "fx_trail",
+                "line_width",
+                "xmarks_spin",
+                "xmarks_speed",
+                "xmarks_curve",
+                "xmarks_amplitude",
+                "xmarks_arms",
+                "xmarks_road",
+            ],
+            Self::Particles => &[
+                "fx_glow",
+                "fx_trail",
+                "particles_count",
+                "particles_speed",
+                "particles_burst",
+                "particles_scale",
+                "particles_size",
+                "particles_life",
             ],
         }
     }
@@ -760,9 +842,10 @@ impl VisualCfg {
                 ([255, 64, 166], [255, 158, 46], [38, 217, 255])
             }
             VisualPreset::Ambience => ([40, 20, 120], [200, 60, 200], [255, 200, 120]),
-            VisualPreset::Hurricane => ([140, 217, 255], [217, 166, 255], [230, 235, 255]),
             VisualPreset::Niagara => ([3, 33, 33], [230, 90, 90], [255, 245, 245]),
             VisualPreset::Windmill => ([71, 71, 25], [156, 161, 97], [243, 246, 222]),
+            VisualPreset::XMarks => ([255, 60, 120], [255, 210, 60], [60, 200, 255]),
+            VisualPreset::Particles => ([60, 120, 255], [180, 80, 255], [255, 140, 200]),
         };
         Self {
             preset: engine,
@@ -861,16 +944,16 @@ impl VisualCfg {
             r::AMBIENCE_BRIGHTNESS,
             d.ambience_brightness,
         );
+        clampf(
+            &mut self.ambience_morph,
+            r::AMBIENCE_MORPH,
+            d.ambience_morph,
+        );
         clampf(&mut self.fx_trail, r::TRAIL, d.fx_trail);
         clampf(&mut self.fx_glow, r::GLOW, d.fx_glow);
         clampf(&mut self.scope_height, r::SCOPE_HEIGHT, d.scope_height);
         clampf(&mut self.scope_expand, r::SCOPE_EXPAND, d.scope_expand);
         clampf(&mut self.scope_blur, r::SCOPE_BLUR, d.scope_blur);
-        clampf(&mut self.hurricane_eye, r::HURRICANE_EYE, d.hurricane_eye);
-        clampf(&mut self.hurricane_sphere_size, r::MULTIPLIER, 1.0);
-        clampf(&mut self.hurricane_sphere_speed, r::MULTIPLIER, 1.0);
-        clampf(&mut self.hurricane_bolts, r::MULTIPLIER, 1.0);
-        clampf(&mut self.hurricane_swirl, r::MULTIPLIER, 1.0);
         clampf(&mut self.niagara_speed, r::NIAGARA_SPEED, d.niagara_speed);
         clampf(&mut self.niagara_emit, r::NIAGARA_EMIT, d.niagara_emit);
         clampf(
@@ -901,6 +984,49 @@ impl VisualCfg {
             &mut self.windmill_amplitude,
             r::WINDMILL_AMPLITUDE,
             d.windmill_amplitude,
+        );
+        clampf(&mut self.windmill_join, r::WINDMILL_JOIN, d.windmill_join);
+        clampf(&mut self.xmarks_spin, r::XMARKS_SPIN, d.xmarks_spin);
+        clampf(&mut self.xmarks_speed, r::XMARKS_SPEED, d.xmarks_speed);
+        clampf(&mut self.xmarks_curve, r::XMARKS_CURVE, d.xmarks_curve);
+        clampf(
+            &mut self.xmarks_amplitude,
+            r::XMARKS_AMPLITUDE,
+            d.xmarks_amplitude,
+        );
+        clampu(&mut self.particles_count, r::PARTICLES_COUNT);
+        clampu(&mut self.xmarks_arms, r::XMARKS_ARMS);
+        clampf(&mut self.xmarks_road, r::XMARKS_ROAD, d.xmarks_road);
+        clampf(
+            &mut self.particles_size,
+            r::PARTICLES_SIZE,
+            d.particles_size,
+        );
+        clampf(
+            &mut self.particles_life,
+            r::PARTICLES_LIFE,
+            d.particles_life,
+        );
+        clampf(
+            &mut self.ambience_density,
+            r::AMBIENCE_DENSITY,
+            d.ambience_density,
+        );
+        clampf(&mut self.ambience_warp, r::AMBIENCE_WARP, d.ambience_warp);
+        clampf(
+            &mut self.particles_speed,
+            r::PARTICLES_SPEED,
+            d.particles_speed,
+        );
+        clampf(
+            &mut self.particles_burst,
+            r::PARTICLES_BURST,
+            d.particles_burst,
+        );
+        clampf(
+            &mut self.particles_scale,
+            r::PARTICLES_SCALE,
+            d.particles_scale,
         );
         clampf(&mut self.gain, r::GAIN, d.gain);
         clampf(&mut self.spectrum_smoothing, r::UNIT, d.spectrum_smoothing);
@@ -1032,6 +1158,23 @@ pub struct Config {
     pub hotkeys: HotkeyCfg,
     /// Modo aleatorio (global, no por preset).
     pub shuffle: ShuffleCfg,
+    pub update: UpdateCfg,
+}
+
+/// Actualizaciones automáticas (ver `crate::update`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateCfg {
+    /// Buscar una versión nueva al abrir la app.
+    pub check_on_start: bool,
+}
+
+impl Default for UpdateCfg {
+    fn default() -> Self {
+        Self {
+            check_on_start: true,
+        }
+    }
 }
 
 impl Config {

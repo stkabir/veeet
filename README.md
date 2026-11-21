@@ -1,8 +1,8 @@
 # Veeet
 
 Visualizador de audio reactivo para Windows, escrito en Rust. Captura con WASAPI
-el audio de la app que esté sonando (Spotify, el navegador…) y dibuja ocho presets sobre wgpu, con el bloom real de
-UnrealBloomPass: **Wavy Form Variant #3**, **Anillo**, **Huracán** y cinco
+el audio de la app que esté sonando (Spotify, el navegador…) y dibuja nueve presets sobre wgpu, con el bloom real de
+UnrealBloomPass: **Wavy Form Variant #3**, **Anillo**, **Partículas** y seis
 recreaciones originales estilo Windows Media Player.
 
 **Versión 0.9.0** · Descarga: [veeet.staytruemx.com](https://veeet.staytruemx.com)
@@ -14,8 +14,6 @@ recreaciones originales estilo Windows Media Player.
 ![Veeet · Alquimia](docs/alchemy.png)
 
 ![Veeet · Ambiente](docs/ambience.png)
-
-![Veeet · Huracán](docs/hurricane.png)
 
 ![Veeet · Niagara](docs/niagara.png)
 
@@ -35,14 +33,16 @@ recreaciones originales estilo Windows Media Player.
   puede fijar una app concreta o escuchar todo el sistema (ver
   [Fuente de audio](#fuente-de-audio)).
 - Analiza el audio en tiempo real con FFT de 2048 muestras.
-- Ocho presets visuales:
+- Nueve presets visuales:
   - **Wavy Form #3**: la onda de Vizz, con 2 líneas de 1 px superpuestas, color HSL,
     Grid Tile y bloom exacto.
   - **Anillo**: anillos de onda concéntricos, uno por rango de frecuencia, con estela
     líquida.
-  - **Huracán**: dos esferas viajan por una tormenta nebulosa y disparan rayos.
+  - **Partículas**: miles de partículas siguen un campo de flujo, dejan estela y
+    estallan en cada golpe.
   - Recreaciones estilo Windows Media Player: **Alquimia** (Alchemy), **Ambiente**
-    (Ambience), **Scope**, **Niagara** y **Windmill** (Ambience · Niagara y Windmill).
+    (Ambience), **Scope**, **Niagara**, **Windmill** (Ambience · Niagara y Windmill)
+    y **X Marca** (inspirada en X Marks the Spot).
 - **UnrealBloomPass real**: 5 mips, kernels personalizados de Vizz, high-pass,
   composición y mezcla aditiva.
 - Panel de ajustes rediseñado con tarjetas de preset, tipografía propia y pie fijo.
@@ -203,7 +203,7 @@ version = 1
 
 [params]
 preset = "ambience"        # motor: wavy_form3 | wave_ring | alchemy | ambience | scope
-                           # | hurricane | niagara | windmill
+                           # | niagara | windmill | xmarks | particles
 ambience_speed = 0.4
 ambience_scale = 2.0
 ambience_brightness = 1.3
@@ -256,14 +256,18 @@ Ajustes propios de cada motor (además de los comunes de arriba):
 | Onda      | `sensitivity`, `glow`, `line_width`, `line_count`, `line_spacing`, `line_variation`, `variation_speed`, `camera_z`, `wave_width` |
 | Anillo    | `sensitivity`, `fx_glow`, `line_width`, `ring_radius` (hasta 1.5), `ring_inner`, `ring_amplitude`, `ring_bands` (1–16), `ring_rotation` (negativo gira al revés), `ring_trail`, `ring_flow`, `ring_steps` |
 | Alquimia  | `alchemy_trail`, `alchemy_speed`, `alchemy_complexity` (1–12), `alchemy_kaleido`, `alchemy_glow`, `alchemy_size`, `alchemy_particles`, `alchemy_star`, `alchemy_mode_time`, `alchemy_motion` |
-| Ambiente  | `ambience_speed`, `ambience_scale`, `ambience_glow`, `ambience_brightness` |
+| Ambiente  | `ambience_speed`, `ambience_scale`, `ambience_glow`, `ambience_brightness`, `ambience_morph` (cuánto cambia de forma en cada golpe) |
 | Trazo     | `sensitivity`, `fx_glow`, `fx_trail`, `line_width`, `scope_height`, `scope_expand`, `scope_blur` |
-| Huracán   | `fx_glow`, `fx_trail`, `hurricane_eye`, `hurricane_sphere_size`, `hurricane_sphere_speed`, `hurricane_bolts` (0 = sin rayos), `hurricane_swirl` |
 | Niagara   | `sensitivity`, `fx_glow`, `fx_trail`, `niagara_speed`, `niagara_emit`, `niagara_squeeze`, `niagara_steps`, `niagara_line`, `niagara_continuous` |
-| Molino    | `sensitivity`, `fx_glow`, `fx_trail`, `windmill_speed` (negativo gira al revés), `windmill_width` (junta o separa las líneas que giran), `windmill_edge_lines`, `windmill_edge_gap`, `windmill_blur`, `windmill_amplitude` |
+| Molino    | `sensitivity`, `fx_glow`, `fx_trail`, `windmill_speed` (negativo gira al revés), `windmill_width` (0 pega las aspas), `windmill_join` (1 = las dos ondas van juntas, sin franja negra), `windmill_edge_lines`, `windmill_edge_gap`, `windmill_blur`, `windmill_amplitude` |
+| X Marca   | `sensitivity`, `fx_glow`, `fx_trail`, `line_width`, `xmarks_spin` (negativo gira al revés), `xmarks_speed` (flujo del líquido), `xmarks_curve` (ondulación), `xmarks_road` (pulso en el golpe), `xmarks_amplitude` |
+| Partículas | `fx_glow`, `fx_trail`, `particles_count` (200–6000), `particles_speed`, `particles_burst` (explosión en el golpe), `particles_scale` (tamaño de los remolinos) |
+
+Los presets guardados con el motor `hurricane` (Huracán, retirado) cargan como
+Ambiente.
 
 Al actualizar desde una versión anterior, la sección `[visual]` de `config.toml`
-se copia a cada uno de los 8 presets de fábrica.
+se copia a cada uno de los presets de fábrica.
 
 ### Modo aleatorio
 
@@ -304,8 +308,8 @@ documentado en [`docs/menu-design.md`](docs/menu-design.md). Usa las fuentes
   - **Deshacer** revierte el último cambio (un arrastre completo de slider cuenta
     como uno; se recuerdan 50). No toca la posición ni el tamaño de la ventana.
 - Acento por preset: cian (Wavy Form #3), ámbar (Anillo), verde (Alquimia), violeta
-  (Ambiente), lima (Scope), blanco hielo (Huracán), turquesa (Niagara) y coral
-  (Windmill).
+  (Ambiente), lima (Scope), turquesa (Niagara), coral
+  (Windmill), oro (X Marca) y rosa (Partículas).
 
 ## Algoritmo de Vizz #3
 
@@ -438,17 +442,19 @@ ni recursos de Microsoft.
 Recreación **original** inspirada en Ambience de Windows Media Player. No usa código
 ni recursos de Microsoft.
 
-- **Shader de pantalla completa** (`render/ambience.wgsl`): ruido fbm de 4 octavas con
-  doble *domain warping* (técnica de Íñigo Quílez) y una paleta coseno cuyo tono
+- **Shader de pantalla completa** (`render/ambience.wgsl`): ruido fbm de 5 octavas con
+  triple *domain warping* (técnica de Íñigo Quílez) y advección del dominio y una paleta coseno cuyo tono
   deriva con el tiempo. El hash es entero (estilo PCG), así no aparecen bloques con
   coordenadas grandes.
 - **Audio**, suavizado a ~250 ms para que las nubes respiren y no tiemblen:
   - los graves aumentan la deformación;
   - los agudos agregan detalle y aceleran el cambio de tono;
   - la energía acelera el flujo y sube el brillo.
-- **Pulso en el beat**: un golpe con ataque instantáneo que decae en ~180 ms acerca
-  la imagen (12 %), sube el brillo y deforma un poco las nubes. No cambia la
-  velocidad del flujo ni el tono: es un latido, no un cambio de escena.
+- **Gas que cambia con el beat**: una fase de forma (`morph`) avanza despacio y da
+  un salto en cada golpe; entra en los tres niveles del warping, así la silueta
+  se reorganiza con la música. Un umbral que baja con los graves deja huecos y
+  jirones. `ambience_morph` regula cuánto cambia (0 = solo el latido).
+- **Pulso en el beat**: el golpe también acerca la imagen (10 %) y sube el brillo.
 - `ambience_speed` (0.6) controla el flujo, `ambience_scale` (1.4) el tamaño de las
   nubes y `ambience_glow` (0.8) el glow propio.
 - `VEEET_PRESET=ambience` arranca directo en este preset.
@@ -460,22 +466,28 @@ Osciloscopio de la forma de onda a lo ancho de la pantalla; con el feedback de
 Alquimia, las copias anteriores se abren hacia afuera y se apagan (`fx_trail`).
 `VEEET_PRESET=scope`.
 
-## Preset Huracán
+## Preset X Marca
 
-Dos esferas viajan por un huracán nebuloso y disparan rayos.
+Recreación **original** inspirada en X Marks the Spot de Windows Media Player.
 
-- **Nebulosa** (`ambience.wgsl`, modo 1): nubes fbm en espiral logarítmica alrededor
-  de un ojo oscuro con pared brillante. La coordenada radial `ln(r) − t` hace que las
-  nubes fluyan hacia afuera, como si la cámara avanzara hacia el ojo; el beat acelera
-  ese túnel y da un destello violeta dentro de la nube. Se suma a la escena después
-  del feedback, así no se acumula en las estelas.
-- **Esferas viajeras**: cada una tiene su propio tiempo, que el beat acelera de golpe.
-  Recorren trayectorias libres: entran y salen del ojo, cruzan la nube y derivan en
-  curvas tipo ocho. Una profundidad variable cambia su tamaño y brillo (vienen hacia
-  la cámara y se alejan). Dejan una estela de cometa de 48 posiciones.
-- **Rayos ramificados** en cada beat (o con energía alta): entre las esferas y hacia
-  la tormenta. Duran 0.22 s.
-- `VEEET_PRESET=hurricane`.
+- **X de ondas**: dos brazos a pantalla completa que giran (`xmarks_spin`); cada
+  brazo es la forma de onda, como en Trazo, más calmada en el cruce y más amplia en
+  las puntas. En cada golpe la onda crece y el giro se acelera.
+- **Estela líquida**: cada vibración de la X deja rastro; el feedback lo expande,
+  lo ondula y lo enrosca hasta llenar la pantalla como un líquido. Los graves y el
+  golpe lo agitan (`xmarks_speed` flujo, `xmarks_curve` ondulación, `xmarks_road`
+  pulso en el golpe).
+- `VEEET_PRESET=xmarks`.
+
+## Preset Partículas
+
+- Hasta 6000 partículas siguen un campo de flujo hecho con senos rotados que cambia
+  con el tiempo; la velocidad sube con el volumen y los medios, los agudos agregan
+  temblor.
+- En cada golpe estallan, alternando entre el centro y un punto al azar
+  (`particles_burst`).
+- Cada una vive 2–6 s, aparece y se apaga suave, y deja estela (`fx_trail`).
+- `VEEET_PRESET=particles`.
 
 ## Preset Niagara
 
@@ -573,7 +585,7 @@ cargo run --example audio_probe
 
 Variables de entorno útiles:
 
-- `VEEET_PRESET=ring|alchemy|ambience|scope|hurricane|niagara|windmill` arranca
+- `VEEET_PRESET=ring|alchemy|ambience|scope|niagara|windmill|xmarks|particles` arranca
   en ese preset. También acepta el `id` o el nombre de un preset propio o importado.
 - `VEEET_AUDIO_PROCESS=chrome.exe` captura el audio de Chrome (útil para probar
   archivos de audio).
@@ -601,10 +613,10 @@ src/
     theme.rs          tokens: superficies, tinta, acentos por preset y fuentes
   render/
     wave.rs           pipeline wgpu, onda, Alquimia, Ambiente, feedback, bloom y Grid Tile
-    wave/fx.rs        Anillo, Scope, Huracán, Niagara y Windmill (geometría + feedback)
+    wave/fx.rs        Anillo, Scope, Niagara, Windmill, X Marca y Partículas (geometría + feedback)
     palette.rs        tablas de color de Alquimia
     ambience.rs       audio suavizado y flujo de Ambiente
-    ambience.wgsl     nubes de Ambiente y nebulosa del Huracán (fbm + domain warping)
+    ambience.wgsl     gas de Ambiente (fbm + domain warping)
     alchemy.rs        ciclo de modos y parámetros del feedback de Alquimia
     alchemy.wgsl      feedback compartido (zoom, remolino, caleidoscopio, smear, blur,
                       color de fondo, borrador, contracción por eje y modo paleta)

@@ -4,6 +4,7 @@
 //! La UI solo muta la configuración y devuelve [`MenuAction`]s; los efectos
 //! sobre la ventana (guardar, cerrar, cambiar de modo) los ejecuta `app.rs`.
 
+mod describe;
 pub mod dock;
 pub mod history;
 mod theme;
@@ -22,6 +23,8 @@ pub enum MenuTab {
     /// Color, espejo y tiempo del preset activo.
     Color,
     Grid,
+    /// Reacción al audio del preset activo (ganancia, golpes…).
+    Reaction,
     /// Presets propios: crear, duplicar, renombrar, exportar.
     Library,
     /// Galería local de presets importados.
@@ -32,12 +35,24 @@ pub enum MenuTab {
     Audio,
 }
 
+/// Los dos grupos del cajón: lo que guarda cada escena y lo de la app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabGroup {
+    Scene,
+    General,
+}
+
 impl MenuTab {
-    pub const ALL: [Self; 9] = [
+    /// Ajustes que guarda cada escena (preset).
+    pub const SCENE: [Self; 5] = [
         Self::Preset,
         Self::Light,
         Self::Color,
         Self::Grid,
+        Self::Reaction,
+    ];
+    /// Ajustes de la app, iguales para todas las escenas.
+    pub const GENERAL: [Self; 5] = [
         Self::Shuffle,
         Self::Library,
         Self::Market,
@@ -45,17 +60,33 @@ impl MenuTab {
         Self::Audio,
     ];
 
+    pub fn group(self) -> TabGroup {
+        if Self::SCENE.contains(&self) {
+            TabGroup::Scene
+        } else {
+            TabGroup::General
+        }
+    }
+
+    pub fn tabs(group: TabGroup) -> &'static [Self] {
+        match group {
+            TabGroup::Scene => &Self::SCENE,
+            TabGroup::General => &Self::GENERAL,
+        }
+    }
+
     pub fn label(self, preset: VisualPreset) -> &'static str {
         match self {
             Self::Preset => builtin_name(preset),
             Self::Light => "Luz",
             Self::Color => "Color",
             Self::Grid => "Mosaico",
+            Self::Reaction => "Reacción",
             Self::Library => "Mis presets",
             Self::Market => "Marketplace",
             Self::Shuffle => "Aleatorio",
             Self::Window => "Ventana",
-            Self::Audio => "Audio",
+            Self::Audio => "Fuente de audio",
         }
     }
 
@@ -99,4 +130,8 @@ pub enum MenuAction {
     RescanMarket,
     /// Modo aleatorio: pasar ya a la siguiente escena.
     ShuffleNext,
+    /// Buscar una versión nueva ahora.
+    CheckUpdate,
+    /// Descargar e instalar la versión disponible.
+    ApplyUpdate,
 }

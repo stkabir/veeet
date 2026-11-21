@@ -16,6 +16,7 @@ use crate::render;
 use crate::shuffle::{self, Shuffle};
 use crate::ui::history::{self, History, Snapshot};
 use crate::ui::{MenuAction, MenuTab, dock};
+use crate::update::{UpdateState, Updater};
 
 const TICK: Duration = Duration::from_millis(16);
 const PLACEMENT_INTERVAL: Duration = Duration::from_millis(250);
@@ -31,6 +32,11 @@ pub struct VeeetApp {
     presets: PresetStore,
     /// Aviso breve para el usuario (importaciones, errores).
     notice: Option<(String, Instant)>,
+    /// Actualizaciones desde GitHub Releases (ver `crate::update`).
+    updater: Updater,
+    /// Ya se avisó de la versión disponible.
+    update_notified: bool,
+    update_checked_at_start: bool,
     /// Reloj de la escena: avanza a `time_scale` del preset activo.
     scene_time: f32,
     /// Modo aleatorio (ver `config.shuffle`).
@@ -206,6 +212,9 @@ impl VeeetApp {
             config,
             presets,
             notice: None,
+            updater: Updater::new(),
+            update_notified: false,
+            update_checked_at_start: false,
             scene_time: 0.0,
             shuffle: Shuffle::new(),
         }
@@ -225,6 +234,7 @@ impl VeeetApp {
         }
 
         self.handle_hotkeys(ctx);
+        self.poll_updates(ctx);
         self.sync_presets();
         self.poll_audio(dt, now);
 
@@ -725,7 +735,9 @@ impl VeeetApp {
             CaptureState::Running { source } => source.clone(),
             _ => "sin audio".to_string(),
         };
+        let update_state = self.updater.state();
         let status = dock::Status {
+            update: &update_state,
             source: &source,
             audio: &audio,
             apps: &self.audio_apps,
@@ -804,10 +816,21 @@ impl VeeetApp {
             }
             MenuAction::TopmostChanged => self.applied_topmost = None,
             MenuAction::SelectPreset(id) => {
+                // Elegir una escena a mano sale del modo aleatorio, que es
+                // una escena más.
+                self.config.shuffle.enabled = false;
                 self.select_preset(&id, true);
                 self.shuffle.restart();
             }
             MenuAction::ShuffleNext => self.shuffle.skip(),
+            MenuAction::CheckUpdate => {
+                self.update_notified = false;
+                self.updater.check();
+            }
+            MenuAction::ApplyUpdate => {
+                self.set_notice("Descargando la actualización…");
+                self.updater.apply();
+            }
             MenuAction::NewPreset(engine) => {
                 self.presets.sync_params(&self.config.visual);
                 let id = self.presets.create(engine);
@@ -904,6 +927,37 @@ impl VeeetApp {
 
     /// Lleva los cambios de la copia de trabajo al store. Si deshacer
     /// cambió el preset activo, primero se cambia de preset.
+    /// Búsqueda inicial de versión nueva, aviso y cierre tras reemplazar el exe.
+    fn poll_updates(&mut self, ctx: &egui::Context) {
+        if !self.update_checked_at_start {
+            self.update_checked_at_start = true;
+            // No buscar con audio sintético de pruebas (--fake).
+            if self.config.update.check_on_start && self.fake.is_none() {
+                self.updater.check();
+            }
+        }
+        if self.updater.restart_requested() {
+            self.save_config();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        let state = self.updater.state();
+        match state {
+            UpdateState::Available(release) if !self.update_notified => {
+                self.update_notified = true;
+                self.set_notice(&format!(
+                    "Veeet {} disponible: Ajustes › Ventana",
+                    release.version
+                ));
+            }
+            UpdateState::Checking | UpdateState::Downloading => {
+                // Que el hilo pueda despertar la UI al terminar.
+                ctx.request_repaint_after(Duration::from_millis(300));
+            }
+            _ => {}
+        }
+    }
+
     fn sync_presets(&mut self) {
         if self.config.active_preset != self.presets.active_id() {
             let id = self.config.active_preset.clone();

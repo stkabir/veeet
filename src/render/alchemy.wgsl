@@ -90,7 +90,22 @@ fn fs_feedback(input: FullscreenOut) -> @location(0) vec4f {
     p = p / max(fb.zoom, 0.01);
     let st = select(vec2f(1.0), fb.stretch, fb.stretch > vec2f(0.0));
     p = p / st;
-    p += fb.warp_amp * sin(p.yx * fb.warp_freq + vec2f(fb.time, fb.time * 1.3));
+    if (fb.palette > 0.5) {
+        // Modo paleta (nubes de WMP): ondulación en direcciones rotadas que
+        // cambian con el tiempo, más un término cruzado. Con ondas alineadas
+        // a los ejes las manchas terminaban cuadradas.
+        let t = fb.time;
+        let d1 = vec2f(cos(t * 0.13), sin(t * 0.13));
+        let d2 = vec2f(cos(t * 0.11 + 2.1), sin(t * 0.11 + 2.1));
+        let d3 = vec2f(cos(-t * 0.07 + 4.2), sin(-t * 0.07 + 4.2));
+        let w1 = sin(dot(p, d1) * fb.warp_freq + t);
+        let w2 = sin(dot(p, d2) * fb.warp_freq * 0.73 - t * 1.3);
+        let w3 = sin(dot(p, d3) * fb.warp_freq * 1.37 + t * 0.7 + w1);
+        p += fb.warp_amp * (vec2f(-d1.y, d1.x) * w1 + vec2f(-d2.y, d2.x) * w2
+            + vec2f(-d3.y, d3.x) * w3 * 0.6) * 0.7;
+    } else {
+        p += fb.warp_amp * sin(p.yx * fb.warp_freq + vec2f(fb.time, fb.time * 1.3));
+    }
     p += fb.smear;
 
     let uv = p / vec2f(aspect, 1.0) + 0.5;
@@ -99,10 +114,22 @@ fn fs_feedback(input: FullscreenOut) -> @location(0) vec4f {
     // Blur de 5 taps + un tap hacia el centro (desenfoque radial). Se toman
     // los cuatro canales: el alfa lleva la intensidad del modo paleta.
     var acc4 = textureSample(prev_tex, samp, uv) * 0.4;
-    acc4 += textureSample(prev_tex, samp, uv + vec2f(px.x, 0.0)) * 0.15;
-    acc4 += textureSample(prev_tex, samp, uv - vec2f(px.x, 0.0)) * 0.15;
-    acc4 += textureSample(prev_tex, samp, uv + vec2f(0.0, px.y)) * 0.15;
-    acc4 += textureSample(prev_tex, samp, uv - vec2f(0.0, px.y)) * 0.15;
+    if (fb.palette > 0.5) {
+        // Disco de 8 taps (ángulo dorado) que gira cada cuadro: difunde en
+        // todas direcciones por igual y no deja la rejilla de una cruz.
+        let spin = fb.time * 2.399;
+        for (var i = 0; i < 8; i = i + 1) {
+            let fi = f32(i);
+            let a = spin + fi * 2.39996;
+            let r = sqrt((fi + 0.5) / 8.0) * 1.3;
+            acc4 += textureSample(prev_tex, samp, uv + vec2f(cos(a), sin(a)) * r * px) * 0.075;
+        }
+    } else {
+        acc4 += textureSample(prev_tex, samp, uv + vec2f(px.x, 0.0)) * 0.15;
+        acc4 += textureSample(prev_tex, samp, uv - vec2f(px.x, 0.0)) * 0.15;
+        acc4 += textureSample(prev_tex, samp, uv + vec2f(0.0, px.y)) * 0.15;
+        acc4 += textureSample(prev_tex, samp, uv - vec2f(0.0, px.y)) * 0.15;
+    }
     let toward_center = textureSample(prev_tex, samp, mix(uv, vec2f(0.5), fb.radial_blur));
     acc4 = mix(acc4, toward_center, min(fb.radial_blur * 8.0, 0.5));
     let acc = acc4.rgb;

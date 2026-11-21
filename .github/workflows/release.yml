@@ -1,0 +1,53 @@
+name: Release
+
+# Publicar: subir `version` en Cargo.toml, commit y luego
+#   git tag v0.9.1 && git push --tags
+# El Release resultante lo usan la landing (descarga directa) y el
+# actualizador de la app (src/update.rs). Los nombres de asset son fijos.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verificar que el tag coincide con Cargo.toml
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          if [ "v$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "El tag ${GITHUB_REF_NAME} no coincide con Cargo.toml (v$version)" >&2
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compilar
+        run: cargo build --release --locked
+
+      - name: Preparar assets
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/veeet.exe dist/Veeet-x64.exe
+          cd dist
+          sha256sum Veeet-x64.exe > Veeet-x64.exe.sha256
+
+      - name: Publicar Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/Veeet-x64.exe dist/Veeet-x64.exe.sha256 \
+            --title "Veeet ${GITHUB_REF_NAME#v}" \
+            --generate-notes

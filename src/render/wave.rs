@@ -201,7 +201,6 @@ pub struct WaveRenderer {
     ambience_pipeline: wgpu::RenderPipeline,
     /// Misma shader con mezcla aditiva: la nebulosa del Huracán se suma a la
     /// escena después del feedback, así no se acumula en las estelas.
-    ambience_add_pipeline: wgpu::RenderPipeline,
     ambience_buffer: wgpu::Buffer,
     ambience_bind: wgpu::BindGroup,
     ambience_motion: AmbienceMotion,
@@ -232,8 +231,6 @@ enum AmbienceMode {
     Off,
     /// Reemplaza la escena (Ambiente).
     Replace,
-    /// Se suma sobre la escena ya con feedback (nebulosa del Huracán).
-    Additive,
 }
 
 impl WaveRenderer {
@@ -535,23 +532,6 @@ impl WaveRenderer {
             wgpu::TextureFormat::Rgba16Float,
             Some(wgpu::BlendState::REPLACE),
         );
-        let additive = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::One,
-            dst_factor: wgpu::BlendFactor::One,
-            operation: wgpu::BlendOperation::Add,
-        };
-        let ambience_add_pipeline = fullscreen_pipeline(
-            device,
-            "veeet ambience add pipeline",
-            &ambience_pipeline_layout,
-            &ambience_shader,
-            "fs_ambience",
-            wgpu::TextureFormat::Rgba16Float,
-            Some(wgpu::BlendState {
-                color: additive,
-                alpha: additive,
-            }),
-        );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("veeet sampler"),
@@ -658,7 +638,6 @@ impl WaveRenderer {
             grade: ColorGrade::default(),
             scratch: Vec::with_capacity(64),
             ambience_pipeline,
-            ambience_add_pipeline,
             ambience_buffer,
             ambience_bind,
             ambience_motion: AmbienceMotion::new(),
@@ -705,13 +684,14 @@ impl WaveRenderer {
                 self.build_alchemy(analysis, cfg, width, height, time);
             }
             VisualPreset::Ambience => {
-                self.update_ambience(analysis, cfg, time, 0.0, 0.0);
+                self.update_ambience(analysis, cfg, time);
             }
             VisualPreset::WaveRing
             | VisualPreset::Scope
-            | VisualPreset::Hurricane
             | VisualPreset::Niagara
-            | VisualPreset::Windmill => {
+            | VisualPreset::Windmill
+            | VisualPreset::XMarks
+            | VisualPreset::Particles => {
                 let frame = fx::Frame {
                     analysis,
                     cfg,
@@ -721,31 +701,28 @@ impl WaveRenderer {
                     ppp,
                 };
                 self.feedback_params = self.fx.build(&mut self.scene, &frame);
-                if cfg.preset == VisualPreset::Hurricane {
-                    // Radio del ojo en unidades del shader (alto = 1).
-                    let eye = cfg.hurricane_eye * width.min(height) / height;
-                    self.update_ambience(analysis, cfg, time, 1.0, eye);
-                }
             }
         }
         self.ambience_mode = match cfg.preset {
             VisualPreset::Ambience => AmbienceMode::Replace,
-            VisualPreset::Hurricane => AmbienceMode::Additive,
             VisualPreset::WavyForm3
             | VisualPreset::WaveRing
             | VisualPreset::Alchemy
             | VisualPreset::Scope
             | VisualPreset::Niagara
-            | VisualPreset::Windmill => AmbienceMode::Off,
+            | VisualPreset::Windmill
+            | VisualPreset::XMarks
+            | VisualPreset::Particles => AmbienceMode::Off,
         };
         self.feedback_active = matches!(
             cfg.preset,
             VisualPreset::WaveRing
                 | VisualPreset::Alchemy
                 | VisualPreset::Scope
-                | VisualPreset::Hurricane
                 | VisualPreset::Niagara
                 | VisualPreset::Windmill
+                | VisualPreset::XMarks
+                | VisualPreset::Particles
         );
         if self.last_preset != Some(cfg.preset) {
             self.feedback_clear = true;
@@ -760,7 +737,10 @@ impl WaveRenderer {
             VisualPreset::WavyForm3 => cfg.glow,
             VisualPreset::Alchemy => cfg.alchemy_glow,
             VisualPreset::Ambience => cfg.ambience_glow,
-            VisualPreset::WaveRing | VisualPreset::Scope | VisualPreset::Hurricane => cfg.fx_glow,
+            VisualPreset::WaveRing
+            | VisualPreset::Scope
+            | VisualPreset::XMarks
+            | VisualPreset::Particles => cfg.fx_glow,
             // Los originales de WMP no tienen bloom: apenas un toque.
             VisualPreset::Niagara | VisualPreset::Windmill => cfg.fx_glow * 0.25,
         }
@@ -879,14 +859,7 @@ impl WaveRenderer {
 
     /// Ambiente no dibuja geometría: avanza el flujo de las nubes y prepara
     /// el uniform del shader de pantalla completa.
-    fn update_ambience(
-        &mut self,
-        analysis: &AnalysisFrame,
-        cfg: &VisualCfg,
-        time: f32,
-        mode: f32,
-        eye_radius: f32,
-    ) {
+    fn update_ambience(&mut self, analysis: &AnalysisFrame, cfg: &VisualCfg, time: f32) {
         let mut tri = std::mem::take(&mut self.scratch);
         resample_bands(&analysis.bands, 3, &mut tri);
         let bands = [
@@ -897,9 +870,7 @@ impl WaveRenderer {
         self.scratch = tri;
         let dt = (time - self.ambience_last_time).clamp(0.001, 0.1);
         self.ambience_last_time = time;
-        self.ambience_params = self
-            .ambience_motion
-            .update(dt, analysis, cfg, bands, mode, eye_radius);
+        self.ambience_params = self.ambience_motion.update(dt, analysis, cfg, bands);
     }
 
     /// Alquimia: curvas tipo rosa/Lissajous moduladas por graves, medios y
@@ -1378,17 +1349,6 @@ impl WaveRenderer {
                 },
             );
             self.feedback_index = next;
-        }
-
-        if self.ambience_mode == AmbienceMode::Additive {
-            fullscreen_pass(
-                encoder,
-                &self.ambience_add_pipeline,
-                &off.scene_view,
-                &self.ambience_bind,
-                wgpu::LoadOp::Load,
-                "veeet ambience add",
-            );
         }
 
         fullscreen_pass(

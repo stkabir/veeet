@@ -14,15 +14,16 @@ use super::theme::{
 };
 use super::widgets::{
     Glyph, accent_button, divider, draw_preset_icon, ghost_button, group_label, icon_button,
-    paint_glyph, preset_tile, preset_word, quick_slider, slider, slider_fmt, slider_u32, tab,
-    toggle,
+    paint_glyph, preset_tile, preset_word, quick_slider, set_describe_engine, shuffle_tile, slider,
+    slider_fmt, slider_u32, tab, toggle,
 };
-use super::{MenuAction, MenuTab};
+use super::{MenuAction, MenuTab, TabGroup};
 use crate::audio::AudioApp;
 use crate::config::{
     CaptureMode, ColorMode, Config, VisualCfg, VisualPreset, WindowMode, range as r, shuffle_range,
 };
 use crate::preset::{Entry, Origin, PresetStore, builtin_id};
+use crate::update::{CURRENT_VERSION, UpdateState};
 
 const DOCK_HEIGHT: f32 = 64.0;
 const DOCK_MAX_WIDTH: f32 = 760.0;
@@ -43,6 +44,7 @@ pub struct Status<'a> {
     pub can_undo: bool,
     /// Aviso breve para el pie del cajón (importaciones, errores).
     pub notice: Option<&'a str>,
+    pub update: &'a UpdateState,
 }
 
 fn dock_rect(content: Rect) -> Rect {
@@ -230,13 +232,14 @@ fn secondary_control(
 ) -> (&'static str, &mut f32, std::ops::RangeInclusive<f32>) {
     match visual.preset {
         VisualPreset::WavyForm3 => ("SUAVIZADO", &mut visual.smoothing, r::UNIT),
-        VisualPreset::Hurricane => ("ESFERAS", &mut visual.hurricane_sphere_size, r::MULTIPLIER),
         VisualPreset::WaveRing => ("RADIO", &mut visual.ring_radius, r::RING_RADIUS),
         VisualPreset::Alchemy => ("VELOCIDAD", &mut visual.alchemy_speed, r::ALCHEMY_SPEED),
         VisualPreset::Ambience => ("ESCALA", &mut visual.ambience_scale, r::AMBIENCE_SCALE),
         VisualPreset::Scope => ("SENSIBILIDAD", &mut visual.sensitivity, r::SENSITIVITY),
         VisualPreset::Windmill => ("ANCHO", &mut visual.windmill_width, r::WINDMILL_WIDTH),
         VisualPreset::Niagara => ("ESTELA", &mut visual.fx_trail, r::TRAIL),
+        VisualPreset::XMarks => ("FLUJO", &mut visual.xmarks_speed, r::XMARKS_SPEED),
+        VisualPreset::Particles => ("EXPLOSIÓN", &mut visual.particles_burst, r::PARTICLES_BURST),
     }
 }
 
@@ -291,50 +294,74 @@ fn preset_menu(
                     .show(ui, |ui| {
                         ui.set_width(width);
                         ui.spacing_mut().item_spacing = vec2(GAP, GAP);
-                        let engines = VisualPreset::all();
-                        for row in engines.chunks(COLS) {
+                        // «Aleatorio» es una escena más: la última casilla.
+                        // Elegir cualquier otra escena lo apaga.
+                        let on = *shuffle;
+                        let tiles: Vec<Option<VisualPreset>> = VisualPreset::all()
+                            .into_iter()
+                            .map(Some)
+                            .chain([None])
+                            .collect();
+                        for row in tiles.chunks(COLS) {
                             ui.horizontal(|ui| {
-                                for &preset in row {
-                                    let id = builtin_id(preset);
-                                    let selected = active_id == id;
-                                    if preset_tile(ui, preset, selected, preset_accent(preset))
-                                        .on_hover_text(preset_word(preset))
-                                        .clicked()
-                                    {
-                                        if !selected {
-                                            actions.push(MenuAction::SelectPreset(id));
+                                for &item in row {
+                                    match item {
+                                        Some(preset) => {
+                                            let id = builtin_id(preset);
+                                            let selected = !on && active_id == id;
+                                            if preset_tile(
+                                                ui,
+                                                preset,
+                                                selected,
+                                                preset_accent(preset),
+                                            )
+                                            .on_hover_text(preset_word(preset))
+                                            .clicked()
+                                            {
+                                                if active_id != id {
+                                                    actions.push(MenuAction::SelectPreset(id));
+                                                }
+                                                *shuffle = false;
+                                                open = false;
+                                            }
                                         }
-                                        open = false;
+                                        None => {
+                                            if shuffle_tile(ui, on, accent)
+                                                .on_hover_text(
+                                                    "Aleatorio: va cambiando de escena solo \
+                                                     (elige cuáles en General · Aleatorio)",
+                                                )
+                                                .clicked()
+                                            {
+                                                if on {
+                                                    actions.push(MenuAction::ShuffleNext);
+                                                } else {
+                                                    *shuffle = true;
+                                                    // Arranca ya con otra escena.
+                                                    actions.push(MenuAction::ShuffleNext);
+                                                }
+                                                open = false;
+                                            }
+                                        }
                                     }
                                 }
                             });
                         }
-                        ui.horizontal(|ui| {
-                            let on = *shuffle;
-                            let hint = if on {
-                                "Apagar el modo aleatorio"
-                            } else {
-                                "Ir cambiando de escena solo (elige cuáles en «Aleatorio»)"
-                            };
-                            if icon_button(ui, Glyph::Dice, accent, on)
-                                .on_hover_text(hint)
-                                .clicked()
-                            {
-                                *shuffle = !on;
-                            }
-                            ui.label(
-                                RichText::new(if on { "Aleatorio: sí" } else { "Aleatorio" })
-                                    .font(super::theme::body(11.0))
-                                    .color(if on { accent } else { INK_SOFT }),
-                            );
-                            if on
-                                && ghost_button(ui, "Siguiente")
+                        if on {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("Aleatorio activo")
+                                        .font(super::theme::body(11.0))
+                                        .color(accent),
+                                );
+                                if ghost_button(ui, "Siguiente")
                                     .on_hover_text("Pasar ya a otra escena")
                                     .clicked()
-                            {
-                                actions.push(MenuAction::ShuffleNext);
-                            }
-                        });
+                                {
+                                    actions.push(MenuAction::ShuffleNext);
+                                }
+                            });
+                        }
                         let custom: Vec<&Entry> = presets
                             .entries()
                             .iter()
@@ -355,6 +382,7 @@ fn preset_menu(
                                                     entry.preset.id.clone(),
                                                 ));
                                             }
+                                            *shuffle = false;
                                             open = false;
                                         }
                                     }
@@ -439,9 +467,10 @@ fn primary_control(
         VisualPreset::WaveRing => ("ESTELA", &mut visual.ring_trail, r::TRAIL),
         VisualPreset::Alchemy => ("ESTELA", &mut visual.alchemy_trail, r::TRAIL),
         VisualPreset::Ambience => ("VELOCIDAD", &mut visual.ambience_speed, r::AMBIENCE_SPEED),
-        VisualPreset::Scope | VisualPreset::Hurricane => ("ESTELA", &mut visual.fx_trail, r::TRAIL),
+        VisualPreset::Scope | VisualPreset::Particles => ("ESTELA", &mut visual.fx_trail, r::TRAIL),
         VisualPreset::Niagara => ("VELOCIDAD", &mut visual.niagara_speed, r::NIAGARA_SPEED),
         VisualPreset::Windmill => ("GIRO", &mut visual.windmill_speed, r::WINDMILL_SPEED),
+        VisualPreset::XMarks => ("GIRO", &mut visual.xmarks_spin, r::XMARKS_SPIN),
     }
 }
 
@@ -454,9 +483,10 @@ fn glow_of(visual: &mut VisualCfg) -> &mut f32 {
         VisualPreset::Ambience => &mut visual.ambience_glow,
         VisualPreset::WaveRing
         | VisualPreset::Scope
-        | VisualPreset::Hurricane
         | VisualPreset::Niagara
-        | VisualPreset::Windmill => &mut visual.fx_glow,
+        | VisualPreset::Windmill
+        | VisualPreset::XMarks
+        | VisualPreset::Particles => &mut visual.fx_glow,
     }
 }
 
@@ -464,12 +494,11 @@ fn glow_of(visual: &mut VisualCfg) -> &mut f32 {
 struct TabCtx<'a> {
     config: &'a mut Config,
     presets: &'a mut PresetStore,
-    /// El preset activo se puede ajustar (los importados no).
-    editable: bool,
     actions: &'a mut Vec<MenuAction>,
     accent: Color32,
     audio: &'a str,
     apps: &'a [AudioApp],
+    update: &'a UpdateState,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -529,13 +558,56 @@ fn draw_drawer(
                     apply_style(ui, accent);
                     ui.set_width(inner.width());
 
+                    // Dos grupos: lo que guarda esta escena y lo general de la
+                    // app. Cada grupo recuerda su última pestaña.
+                    let group = current_tab.group();
+                    let memory = Id::unique("veeet-tab-memory");
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let scene_label = format!("Escena · {}", presets.active().preset.name);
+                        for (target, label, hover) in [
+                            (
+                                TabGroup::Scene,
+                                scene_label.as_str(),
+                                "Ajustes que se guardan en esta escena",
+                            ),
+                            (
+                                TabGroup::General,
+                                "General",
+                                "Ajustes de la app, iguales en todas las escenas",
+                            ),
+                        ] {
+                            let response = if group == target {
+                                accent_button(ui, label, accent)
+                            } else {
+                                ghost_button(ui, label)
+                            };
+                            if response.on_hover_text(hover).clicked() && group != target {
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_temp(
+                                        memory.with(group == TabGroup::Scene),
+                                        *current_tab,
+                                    )
+                                });
+                                *current_tab = ui
+                                    .ctx()
+                                    .data(|d| {
+                                        d.get_temp::<MenuTab>(
+                                            memory.with(target == TabGroup::Scene),
+                                        )
+                                    })
+                                    .unwrap_or(MenuTab::tabs(target)[0]);
+                            }
+                        }
+                    });
+                    ui.add_space(2.0);
                     egui::ScrollArea::horizontal()
                         .id_salt("veeet-tabs")
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 0.0;
-                                for candidate in MenuTab::ALL {
+                                for &candidate in MenuTab::tabs(current_tab.group()) {
                                     let label = candidate.label(config.visual.preset);
                                     if tab(ui, label, *current_tab == candidate, accent).clicked() {
                                         *current_tab = candidate;
@@ -560,24 +632,24 @@ fn draw_drawer(
                             let mut cx = TabCtx {
                                 config: &mut *config,
                                 presets: &mut *presets,
-                                editable,
                                 actions: &mut *actions,
                                 accent,
                                 audio: status.audio,
                                 apps: status.apps,
+                                update: status.update,
                             };
-                            let per_preset = matches!(
-                                *current_tab,
-                                MenuTab::Preset | MenuTab::Light | MenuTab::Color | MenuTab::Grid
-                            );
+                            let per_preset = current_tab.group() == TabGroup::Scene;
                             if per_preset {
                                 preset_banner(ui, &mut cx);
                             }
+                            // Las descripciones de los campos dependen del motor.
+                            set_describe_engine(ui.ctx(), cx.config.visual.preset);
                             ui.add_enabled_ui(editable || !per_preset, |ui| match *current_tab {
                                 MenuTab::Preset => tab_preset(ui, wide, &mut cx),
                                 MenuTab::Light => tab_light(ui, wide, &mut cx),
                                 MenuTab::Color => tab_color(ui, wide, &mut cx),
                                 MenuTab::Grid => tab_grid(ui, wide, &mut cx),
+                                MenuTab::Reaction => tab_reaction(ui, wide, &mut cx),
                                 MenuTab::Library => tab_library(ui, wide, &mut cx),
                                 MenuTab::Market => tab_market(ui, &mut cx),
                                 MenuTab::Shuffle => tab_shuffle(ui, wide, &mut cx),
@@ -816,13 +888,28 @@ fn tab_preset(ui: &mut Ui, wide: bool, cx: &mut TabCtx<'_>) {
                     r::AMBIENCE_BRIGHTNESS,
                     a,
                 );
-                hint(ui, "Escala mayor: formas más chicas.");
+                slider(
+                    ui,
+                    "densidad",
+                    &mut v.ambience_density,
+                    r::AMBIENCE_DENSITY,
+                    a,
+                );
+                slider(ui, "turbulencia", &mut v.ambience_warp, r::AMBIENCE_WARP, a);
             },
             |ui, cx| {
                 let (a, v) = (cx.accent, &mut cx.config.visual);
                 group_label(ui, "FLUJO", a);
                 slider(ui, "velocidad", &mut v.ambience_speed, r::AMBIENCE_SPEED, a);
+                slider(
+                    ui,
+                    "cambio con el golpe",
+                    &mut v.ambience_morph,
+                    r::AMBIENCE_MORPH,
+                    a,
+                );
                 slider(ui, "suavizado", &mut v.smoothing, r::UNIT, a);
+                hint(ui, "El gas cambia de forma en cada golpe.");
             },
         ),
         VisualPreset::Scope => two_col(
@@ -849,39 +936,81 @@ fn tab_preset(ui: &mut Ui, wide: bool, cx: &mut TabCtx<'_>) {
                 slider(ui, "estela", &mut v.fx_trail, r::TRAIL, a);
                 slider3(ui, "expansión", &mut v.scope_expand, r::SCOPE_EXPAND, a);
                 slider(ui, "desenfoque", &mut v.scope_blur, r::SCOPE_BLUR, a);
-                hint(ui, "Expansión 1 = quieta; mayor se abre, menor se cierra.");
+                toggle(ui, &mut v.scope_mirror, "Onda en espejo", a);
             },
         ),
-        VisualPreset::Hurricane => two_col(
+        VisualPreset::XMarks => two_col(
             ui,
             wide,
             cx,
             |ui, cx| {
                 let (a, v) = (cx.accent, &mut cx.config.visual);
-                group_label(ui, "TORMENTA", a);
-                slider(ui, "ojo", &mut v.hurricane_eye, r::HURRICANE_EYE, a);
-                slider(ui, "remolino", &mut v.hurricane_swirl, r::MULTIPLIER, a);
+                group_label(ui, "X", a);
+                slider(ui, "giro", &mut v.xmarks_spin, r::XMARKS_SPIN, a);
+                slider_u32(ui, "brazos", &mut v.xmarks_arms, r::XMARKS_ARMS, a);
+                slider3(
+                    ui,
+                    "amplitud de la onda",
+                    &mut v.xmarks_amplitude,
+                    r::XMARKS_AMPLITUDE,
+                    a,
+                );
+                slider(ui, "grosor", &mut v.line_width, r::LINE_WIDTH, a);
+                slider(ui, "sensibilidad", &mut v.sensitivity, r::SENSITIVITY, a);
+            },
+            |ui, cx| {
+                let (a, v) = (cx.accent, &mut cx.config.visual);
+                group_label(ui, "LÍQUIDO", a);
+                slider(ui, "flujo", &mut v.xmarks_speed, r::XMARKS_SPEED, a);
+                slider(ui, "ondulación", &mut v.xmarks_curve, r::XMARKS_CURVE, a);
+                slider(ui, "pulso", &mut v.xmarks_road, r::XMARKS_ROAD, a);
+                slider(ui, "estela", &mut v.fx_trail, r::TRAIL, a);
+                slider(ui, "suavizado", &mut v.smoothing, r::UNIT, a);
+            },
+        ),
+        VisualPreset::Particles => two_col(
+            ui,
+            wide,
+            cx,
+            |ui, cx| {
+                let (a, v) = (cx.accent, &mut cx.config.visual);
+                group_label(ui, "PARTÍCULAS", a);
+                slider_u32(
+                    ui,
+                    "cantidad",
+                    &mut v.particles_count,
+                    r::PARTICLES_COUNT,
+                    a,
+                );
+                slider(
+                    ui,
+                    "explosión en el golpe",
+                    &mut v.particles_burst,
+                    r::PARTICLES_BURST,
+                    a,
+                );
+                slider(ui, "grosor", &mut v.particles_size, r::PARTICLES_SIZE, a);
+                slider(ui, "vida", &mut v.particles_life, r::PARTICLES_LIFE, a);
                 slider(ui, "estela", &mut v.fx_trail, r::TRAIL, a);
             },
             |ui, cx| {
                 let (a, v) = (cx.accent, &mut cx.config.visual);
-                group_label(ui, "ESFERAS Y RAYOS", a);
+                group_label(ui, "FLUJO", a);
                 slider(
                     ui,
-                    "tamaño de esferas",
-                    &mut v.hurricane_sphere_size,
-                    r::MULTIPLIER,
+                    "velocidad",
+                    &mut v.particles_speed,
+                    r::PARTICLES_SPEED,
                     a,
                 );
                 slider(
                     ui,
-                    "velocidad de esferas",
-                    &mut v.hurricane_sphere_speed,
-                    r::MULTIPLIER,
+                    "tamaño de remolinos",
+                    &mut v.particles_scale,
+                    r::PARTICLES_SCALE,
                     a,
                 );
-                slider(ui, "rayos", &mut v.hurricane_bolts, r::MULTIPLIER, a);
-                hint(ui, "Rayos en 0 los apaga.");
+                slider(ui, "suavizado", &mut v.smoothing, r::UNIT, a);
             },
         ),
         VisualPreset::Niagara => two_col(
@@ -941,12 +1070,18 @@ fn tab_preset(ui: &mut Ui, wide: bool, cx: &mut TabCtx<'_>) {
                 );
                 slider3(
                     ui,
-                    "separación de líneas",
+                    "separación de líneas dobles",
                     &mut v.windmill_edge_gap,
                     r::WINDMILL_EDGE_GAP,
                     a,
                 );
-                hint(ui, "Franja más angosta junta las líneas que giran.");
+                slider(
+                    ui,
+                    "juntar ondas",
+                    &mut v.windmill_join,
+                    r::WINDMILL_JOIN,
+                    a,
+                );
             },
             |ui, cx| {
                 let (a, v) = (cx.accent, &mut cx.config.visual);
@@ -978,7 +1113,7 @@ fn tab_light(ui: &mut Ui, wide: bool, cx: &mut TabCtx<'_>) {
             slider(ui, "brillo", glow_of(&mut cx.config.visual), r::GLOW, a);
             let v = &mut cx.config.visual;
             slider(ui, "umbral", &mut v.bloom_threshold, r::UNIT, a);
-            slider(ui, "radio", &mut v.bloom_radius, r::UNIT, a);
+            slider(ui, "radio del resplandor", &mut v.bloom_radius, r::UNIT, a);
             hint(ui, "Umbral bajo: brilla todo. Alto: solo lo más intenso.");
         },
         |ui, cx| {
@@ -1545,6 +1680,51 @@ fn tab_window(ui: &mut Ui, wide: bool, cx: &mut TabCtx<'_>) {
                 "Ocultar controles en pantalla completa",
                 a,
             );
+            ui.add_space(8.0);
+            group_label(ui, "ACTUALIZACIONES", a);
+            toggle(
+                ui,
+                &mut cx.config.update.check_on_start,
+                "Buscar al abrir",
+                a,
+            );
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                let (text, button) = match cx.update {
+                    UpdateState::Checking => ("Buscando…".to_string(), None),
+                    UpdateState::Downloading => ("Descargando…".to_string(), None),
+                    UpdateState::Available(r) => (
+                        format!("Disponible: {}", r.version),
+                        Some((
+                            format!("Actualizar a {}", r.version),
+                            MenuAction::ApplyUpdate,
+                        )),
+                    ),
+                    UpdateState::UpToDate => (
+                        format!("Veeet {CURRENT_VERSION} está al día"),
+                        Some(("Buscar ahora".to_string(), MenuAction::CheckUpdate)),
+                    ),
+                    UpdateState::Error(msg) => (
+                        msg.clone(),
+                        Some(("Reintentar".to_string(), MenuAction::CheckUpdate)),
+                    ),
+                    UpdateState::Idle => (
+                        format!("Veeet {CURRENT_VERSION}"),
+                        Some(("Buscar ahora".to_string(), MenuAction::CheckUpdate)),
+                    ),
+                };
+                ui.label(text);
+                if let Some((label, action)) = button {
+                    let response = if action == MenuAction::ApplyUpdate {
+                        accent_button(ui, &label, a)
+                    } else {
+                        ghost_button(ui, &label)
+                    };
+                    if response.clicked() {
+                        cx.actions.push(action);
+                    }
+                }
+            });
         },
         |ui, cx| {
             let a = cx.accent;
@@ -1641,33 +1821,50 @@ fn tab_audio(ui: &mut Ui, wide: bool, cx: &mut TabCtx<'_>) {
             }
         },
         |ui, cx| {
-            let (a, editable, v) = (cx.accent, cx.editable, &mut cx.config.visual);
-            group_label(ui, "REACCIÓN DE ESTE PRESET", a);
-            ui.add_enabled_ui(editable, |ui| {
-                slider(ui, "ganancia", &mut v.gain, r::GAIN, a);
-                slider(
-                    ui,
-                    "suavizado del espectro",
-                    &mut v.spectrum_smoothing,
-                    0.0..=1.0,
-                    a,
-                );
-                slider(
-                    ui,
-                    "sensibilidad a golpes",
-                    &mut v.beat_sensitivity,
-                    0.0..=1.0,
-                    a,
-                );
-                slider(
-                    ui,
-                    "peso de frecuencias",
-                    &mut v.freq_influence,
-                    0.0..=1.0,
-                    a,
-                );
-            });
-            hint(ui, "Cada preset guarda su propia reacción al audio.");
+            let a = cx.accent;
+            group_label(ui, "CÓMO ELIGE", a);
+            hint(
+                ui,
+                "Automático sigue a la app que suena; elegir una app la fija.",
+            );
+            hint(
+                ui,
+                "La reacción al audio de cada escena está en Escena · Reacción.",
+            );
+        },
+    );
+}
+
+/// Cómo reacciona al audio la escena activa (se guarda en el preset).
+fn tab_reaction(ui: &mut Ui, wide: bool, cx: &mut TabCtx<'_>) {
+    two_col(
+        ui,
+        wide,
+        cx,
+        |ui, cx| {
+            let (a, v) = (cx.accent, &mut cx.config.visual);
+            group_label(ui, "VOLUMEN Y ESPECTRO", a);
+            slider(ui, "ganancia", &mut v.gain, r::GAIN, a);
+            slider(
+                ui,
+                "suavizado del espectro",
+                &mut v.spectrum_smoothing,
+                r::UNIT,
+                a,
+            );
+            slider(ui, "peso de frecuencias", &mut v.freq_influence, r::UNIT, a);
+        },
+        |ui, cx| {
+            let (a, v) = (cx.accent, &mut cx.config.visual);
+            group_label(ui, "GOLPES", a);
+            slider(
+                ui,
+                "sensibilidad a golpes",
+                &mut v.beat_sensitivity,
+                r::UNIT,
+                a,
+            );
+            hint(ui, "Cada escena guarda su propia reacción al audio.");
         },
     );
 }

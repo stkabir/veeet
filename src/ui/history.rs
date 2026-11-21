@@ -127,6 +127,7 @@ pub fn reset_tab(config: &mut Config, tab: MenuTab) {
         MenuTab::Light => v.reset_keys(LIGHT_KEYS),
         MenuTab::Color => v.reset_keys(COLOR_KEYS),
         MenuTab::Grid => v.reset_keys(GRID_KEYS),
+        MenuTab::Reaction => v.reset_keys(AUDIO_KEYS),
         MenuTab::Shuffle => {
             // Conserva si está encendido: restablecer no lo apaga.
             let enabled = config.shuffle.enabled;
@@ -150,8 +151,6 @@ pub fn reset_tab(config: &mut Config, tab: MenuTab) {
             let a = &mut config.audio;
             a.mode = da.mode;
             a.process = da.process;
-            // La reactividad es del preset.
-            v.reset_keys(AUDIO_KEYS);
         }
     }
 }
